@@ -2246,9 +2246,31 @@ _AIR_DETAIL_RE = re.compile(r"飞机详情\s*\[(\d+)/(\d+)\]\s+(.+)")
 
 @app.route("/")
 def index():
+    fleet = _fleet_rows()
+    p = _paths()
+    hubs = []
+    market = None
+    if p["hubs"].exists():
+        try:
+            raw_hubs = json.loads(p["hubs"].read_text(encoding="utf-8"))
+            hubs = sorted(h.get("name", "") for h in raw_hubs if h.get("name", ""))
+        except Exception:
+            hubs = []
+    if not hubs:
+        hubs = sorted({r.get("枢纽分类", "其他") for r in fleet})
+    if p["market"].exists():
+        try:
+            market = json.loads(p["market"].read_text(encoding="utf-8"))
+        except Exception:
+            market = None
+    maint = _maintenance_payload()
     return render_template(
         "index.html", csrf_token=_csrf_token,
         account=_active_credentials()[0],
+        dashboard_bootstrap={
+            "fleet": fleet, "hubs": hubs,
+            "market": market, "maint": maint,
+        },
     )
 
 
@@ -2912,11 +2934,15 @@ def api_pending_cancel(tid: str):
 
 @app.route("/api/maintenance")
 def api_maintenance():
+    return jsonify(_maintenance_payload())
+
+
+def _maintenance_payload() -> dict:
     """飞机检修预警：只返回需要检修的飞机（A-Check 优先、高损坏率次之）。"""
     # 优先返回采集脚本实时推送的检修预警缓存
     with _maint_cache_lock:
         if _maint_cache is not None:
-            return jsonify(_maint_cache)
+            return _maint_cache
 
     fleet = _read_csv(_paths()["fleet"])
 
@@ -2962,11 +2988,11 @@ def api_maintenance():
         it.pop("_sort", None)
         warnings.append(it)
 
-    return jsonify({
+    return {
         "warnings": warnings,
         "count": len(warnings),
         "updated_at": _now_bjt().strftime("%H:%M:%S"),
-    })
+    }
 
 
 @app.route("/api/market")
