@@ -634,6 +634,11 @@ class ServerSchedulingTests(unittest.TestCase):
         server._run_status["running"] = False
         server._home_status_cache = None
         server._home_status_ts = 0
+        # 隔离每个用例的建设记录，防止前序用例真实写入全局 builds.csv 后
+        # 污染后续 takeoff 用例（_retrofit_blocks_takeoff 会读取该文件）。
+        builds = server._paths_for_account("tests@example.invalid")["builds"]
+        if builds.exists():
+            builds.unlink()
 
     def test_server_import_finishes_before_scheduler_start(self):
         self.assertTrue(hasattr(server, "_publish_log"))
@@ -1110,10 +1115,12 @@ class ServerSchedulingTests(unittest.TestCase):
         }
         with patch.object(server, "_get_route_planner", return_value=planner), \
              patch.object(server, "_schedule_takeoff") as schedule, \
+             patch.object(server, "_mark_build") as mark_build, \
              patch.object(server, "_publish_log"):
             server._run_pending_task(task)
         self.assertEqual(task["status"], "failed")
         schedule.assert_not_called()
+        mark_build.assert_called_once_with("SAFE-1", status="retrofit_failed")
 
     def test_invalid_retrofit_config_fails_before_login(self):
         task = {
