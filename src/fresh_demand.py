@@ -56,7 +56,7 @@ def enqueue_strong_demand(rows: list[dict],
         reg = row.get("注册号", "")
         aircraft_status = status_map.get(aircraft_id, {})
         if str(aircraft_status.get("停飞", "0") or "0").strip() not in {"", "0", "false", "False"}:
-            print(f"{reg} 已停飞，暂不登记自动起飞", flush=True)
+            print(f"{reg} 已人工停飞，暂不登记自动起飞", flush=True)
             continue
         route_id = str(aircraft_status.get("航线ID", ""))
         if not route_id:

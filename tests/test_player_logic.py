@@ -624,6 +624,22 @@ class ServerSchedulingTests(unittest.TestCase):
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn("t.route_required && !t.route_ready", template)
 
+    def test_takeoff_pending_uses_compact_mobile_fields(self):
+        server._pending_tasks = [{
+            "id": "takeoff-1", "kind": "takeoff",
+            "title": "飞机 A330-2F-1 返场结束后接管起飞（航线 27989308）",
+            "status": "pending", "trigger_at": time.time() + 900,
+            "created_at": time.time(),
+            "error": "游戏暂不允许起飞（not_ready）\n第 2 次，15 分钟后重试",
+            "params": {"reg": "A330-2F-1", "route_id": "27989308",
+                       "reason": "返场结束"},
+        }]
+        with patch.object(server, "_sync_account_context"), server.app.test_client() as client:
+            task = client.get("/api/pending").get_json()[0]
+        self.assertEqual(task["title"], "A330-2F-1 返场后起飞")
+        self.assertEqual(task["route_id"], "27989308")
+        self.assertIn("\n", task["error"])
+
     def test_delivery_continue_reuses_confirmation_and_keeps_waiting_result(self):
         planner = Mock()
         planner._delivery_status.return_value = (True, 0)
@@ -747,7 +763,7 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertEqual(task["status"], "done")
         self.assertIsNone(task["error"])
         self.assertNotIn("retry", task)
-        self.assertIn("已停飞", publish.call_args.args[0])
+        self.assertIn("人工停飞", publish.call_args.args[0])
         refresh.assert_not_called()
         planner.takeoff_route.assert_not_called()
 
@@ -1053,7 +1069,7 @@ class ServerSchedulingTests(unittest.TestCase):
         with patch("builtins.print") as output:
             fresh_demand.enqueue_strong_demand([row], status_map=status)
         lines = [str(call.args[0]) for call in output.call_args_list]
-        self.assertTrue(any("已停飞" in line for line in lines))
+        self.assertTrue(any("人工停飞" in line for line in lines))
         self.assertFalse(any(line.startswith("__TAKEOVER_TAKEOFF__") for line in lines))
 
     def test_unknown_and_zero_fuel_are_both_safe(self):

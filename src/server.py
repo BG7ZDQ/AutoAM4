@@ -952,19 +952,28 @@ def _defer_online_failure(task: dict, category: str, message: str) -> bool:
             delay = 6 * 3600
             task["trigger_at"] = time.time() + delay
             task["status"] = "pending"
-            task["error"] = f"{message}；连续失败 {attempts} 次，转为每 6 小时安全恢复"
-            _publish_log(f"⏳ {task.get('title', '建设待办')}：{task['error']}")
+            task["error"] = f"{message}\n连续失败 {attempts} 次，改为每 6 小时重试"
+            _publish_log(f"⏳ {_pending_log_label(task)}\n   {task['error']}")
             return True
         task["status"] = "done"
-        task["error"] = f"{message}；连续失败 {attempts} 次，暂停至每日 06:00 重新评估"
-        _publish_log(f"⏸️ {task.get('title', '待办')}：{task['error']}")
+        task["error"] = f"{message}\n连续失败 {attempts} 次，暂停至每日 06:00 重新评估"
+        _publish_log(f"⏸️ {_pending_log_label(task)}\n   {task['error']}")
         return False
     delay = delays[attempts - 1]
     task["trigger_at"] = time.time() + delay
     task["status"] = "pending"
-    task["error"] = f"{message}；第 {attempts} 次失败，{delay // 60} 分钟后重试"
-    _publish_log(f"⏳ {task.get('title', '待办')}：{task['error']}")
+    task["error"] = f"{message}\n第 {attempts} 次，{delay // 60} 分钟后重试"
+    _publish_log(f"⏳ {_pending_log_label(task)}\n   {task['error']}")
     return True
+
+
+def _pending_log_label(task: dict) -> str:
+    """给移动端日志提供短而明确的任务名称。"""
+    params = task.get("params") or {}
+    reg = str(params.get("reg", "")).strip()
+    if task.get("kind") == "takeoff" and reg:
+        return f"{reg} 起飞"
+    return str(task.get("title") or "待办")
 
 
 def _defer_retrofit_confirmation(task: dict, reg: str, route_id: str, message: str) -> None:
@@ -1372,7 +1381,7 @@ def _run_pending_task(task: dict) -> None:
             task["error"] = None
             task["completed_at"] = time.time()
             task.pop("retry", None)
-            _publish_log(f"{reg} 已停飞，自动起飞待办已结束。")
+            _publish_log(f"{reg} 已人工停飞，自动起飞待办已结束。")
             return
         refreshed = _refresh_fleet_row(
             reg, str(params.get("fid", "")), str(params.get("hub_id", "")))
@@ -1413,9 +1422,13 @@ def _run_pending_task(task: dict) -> None:
         if _removed_aircraft_guard(task):
             return
         if response_state != "accepted":
+            response_label = {
+                "not_ready": "游戏暂不允许起飞（not_ready）",
+                "rejected": "游戏拒绝起飞（rejected）",
+                "unknown": "起飞响应无法确认（unknown）",
+            }.get(response_state, f"起飞响应无法确认（{response_state}）")
             _defer_online_failure(
-                task, "takeoff",
-                f"起飞响应未确认：{reg}（航线 {route_id}，{response_state}）")
+                task, "takeoff", response_label)
             return
         task["status"] = "done"
         task["error"] = None
@@ -2805,10 +2818,10 @@ def api_pending():
         out = [{
             "id": t["id"],
             "kind": t.get("kind"),
-            "title": str(t.get("title") or "").replace(
-                "维护/改装完成后接管起飞", "返场结束后接管起飞"),
+            "title": _pending_display_title(t),
             "status": t.get("status"),
             "error": t.get("error"),
+            "route_id": str((t.get("params") or {}).get("route_id", "")),
             "route_required": t.get("kind") in _AIRCRAFT_OWNED_TASK_KINDS,
             "route_ready": bool(t.get("params", {}).get("route_id")),
             "trigger_at": t.get("trigger_at"),
@@ -2816,6 +2829,18 @@ def api_pending():
             "created_at": t.get("created_at"),
         } for t in tasks]
     return jsonify(out)
+
+
+def _pending_display_title(task: dict) -> str:
+    """待办列表使用适合窄屏的标题，细节由独立字段展示。"""
+    if task.get("kind") != "takeoff":
+        return str(task.get("title") or "")
+    params = task.get("params") or {}
+    reg = str(params.get("reg", "飞机")).strip() or "飞机"
+    reason = str(params.get("reason", ""))
+    if reason in {"维护/改装完成", "返场结束"} or "返场" in str(task.get("title", "")):
+        return f"{reg} 返场后起飞"
+    return f"{reg} 下次起飞"
 
 
 @app.route("/api/pending/<tid>/cancel", methods=["POST"])

@@ -1,5 +1,11 @@
 <!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<link rel="icon" href="/static/icons/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/icons/favicon-16x16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png">
+<link rel="manifest" href="/static/icons/site.webmanifest">
+<meta name="theme-color" content="#071f4b">
 <title>AM4 机队中心</title><style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#0f1117;--card:#1a1d27;--brd:#2a2e3a;--t:#e0e4f0;--t2:#8b90a5;--t3:#5c6175;--ac:#4da6ff;--ac2:#00c9a7;--wr:#f5a623;--dg:#ff5c5c;--r:12px;--sh:0 2px 12px rgba(0,0,0,.3);--thb:#1e2130}
@@ -504,11 +510,12 @@ async function lp() {
         : t.status === 'done' ? '<span class="badge" style="background:rgba(40,167,69,.25)">已完成</span>'
         : t.status === 'failed' ? '<span class="badge" style="background:rgba(220,53,69,.25)">失败</span>'
         : '<span class="badge">已取消</span>';
-      let err = t.error ? '<div class="dim" style="font-size:.7rem">' + eh(t.error) + '</div>' : '';
+      let route = t.route_id ? '<div class="dim" style="font-size:.7rem">航线 ' + eh(t.route_id) + '</div>' : '';
+      let err = t.error ? '<div class="dim" style="font-size:.7rem;white-space:pre-line">' + eh(t.error) + '</div>' : '';
       let act = t.status === 'pending' ? '<button class="btn btn-outline btn-sm" onclick="pcCancel(\'' + eh(t.id) + '\')">取消</button>' : '';
       let notReady = t.status === 'pending' && t.route_required && !t.route_ready;
       let rowStyle = notReady ? ' style="background:rgba(255,193,7,.12)"' : '';
-      return '<tr' + rowStyle + '><td><b>' + (notReady ? '★ ' : '') + eh(t.title) + '</b>' + (notReady ? ' <span class="dim" style="font-size:.7rem">航线未建</span>' : '') + err + '</td><td>' + when + remain + '</td><td>' + badge + '</td><td>' + act + '</td></tr>';
+      return '<tr' + rowStyle + '><td><b>' + (notReady ? '★ ' : '') + eh(t.title) + '</b>' + (notReady ? ' <span class="dim" style="font-size:.7rem">航线未建</span>' : '') + route + err + '</td><td>' + when + remain + '</td><td>' + badge + '</td><td>' + act + '</td></tr>';
     }).join('');
   } catch (e) { console.error(e); }
 }
