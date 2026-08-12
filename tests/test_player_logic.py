@@ -266,6 +266,15 @@ class PlayerSafetyTests(unittest.TestCase):
 
 
 class MarketingScheduleTests(unittest.TestCase):
+    def test_relogin_must_reach_authenticated_homepage(self):
+        with patch.object(
+            collector, "_do_curl",
+            side_effect=["login-page", "login-response", "login-page"],
+        ), patch.object(collector, "_mark_account") as mark:
+            with self.assertRaisesRegex(RuntimeError, "重新登录未成功"):
+                collector._relogin()
+        mark.assert_not_called()
+
     def test_marketing_purchase_can_reuse_known_inactive_page(self):
         active = "<tr><td><span class='glyphicons glyphicons-leaf'></span></td><td id='eTimer'></td></tr><script>timer('eTimer',43200);</script>"
         with patch.object(collector, "_ensure_login"), \
@@ -570,8 +579,21 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertIn(".hub-chips{flex-wrap:nowrap;overflow-x:auto", template)
         self.assertIn(".toolbar>#hf,.toolbar>button{display:none}", template)
-        self.assertIn(".reg-cell{white-space:nowrap}", template)
+        self.assertIn(".reg-cell>strong{white-space:nowrap}", template)
+        self.assertIn('class="build-tag-row"', template)
         self.assertIn('class="hub-scroll"', template)
+
+    def test_route_planner_uses_in_page_selectors_instead_of_native_dropdowns(self):
+        template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('class="rp-select" id="rpAcCtl"', template)
+        self.assertIn('class="rp-select" id="rpEngineCtl"', template)
+        self.assertIn('class="rp-select" id="rpDepCtl"', template)
+        self.assertNotIn('id="rpAc" list=', template)
+        self.assertNotIn('<select class="filter-select" id="rpEngine"', template)
+        self.assertNotIn('<select class="filter-select" id="rpDep"', template)
+        self.assertIn("RP_CACHE_KEY='am4-route-base-v1'", template)
+        self.assertIn("account:rpCacheAccount()", template)
+        self.assertIn("rpRestoreBase();", template)
 
     def test_dashboard_restores_theme_before_paint_and_caches_by_account(self):
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
@@ -590,6 +612,16 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertIn("function logClass(line)", template)
         self.assertIn("line.includes('not_ready'))return'warn'", template)
         self.assertIn(".console .warn{color:var(--wr)}", template)
+        self.assertIn("mobile=matchMedia('(max-width:768px)').matches", template)
+        self.assertIn("document.getElementById('sb').textContent=mobile?compact(m.balance):m.balance", template)
+        self.assertIn("r=!!s.running;ub(r,s.mode||'');uc(r)", template)
+        self.assertIn("{{ '运行中' if initial_running else '空闲' }}", template)
+        self.assertIn("function chips(c)", template)
+        self.assertIn("if(row['_pending_build'])tr.style.background='rgba(255,193,7,.12)'", template)
+        self.assertIn("function order(rows)", template)
+        self.assertIn("renderHubOptions();applyFleetView();rm()", template)
+        self.assertLess(template.index("window.st=function(t)"),
+                        template.index("let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }}"))
 
 
 class ServerSchedulingTests(unittest.TestCase):
@@ -607,6 +639,15 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertTrue(hasattr(server, "_publish_log"))
         self.assertTrue(hasattr(server, "_route_step_log"))
         self.assertEqual(os.environ["AM4_DISABLE_SCHEDULER"], "1")
+
+    def test_dashboard_bootstrap_uses_compact_fleet_rows(self):
+        compact = server._dashboard_fleet_snapshot([{
+            "飞机ID": "1", "注册号": "TEST-1", "飞行时长": "01:00:00",
+            "经济舱需求": "999", "_operation_state": "flying",
+        }])[0]
+        self.assertEqual(compact["飞机ID"], "1")
+        self.assertEqual(compact["_operation_state"], "flying")
+        self.assertNotIn("经济舱需求", compact)
 
     def test_invalid_run_json_does_not_leave_false_running_state(self):
         with server.app.test_client() as client:
@@ -1471,6 +1512,47 @@ class ServerSchedulingTests(unittest.TestCase):
              patch.object(server, "_publish_log"):
             server._run_pending_task(task)
         self.assertEqual(task["status"], "pending")
+        purchase.assert_not_called()
+
+    def test_expired_marketing_is_repurchased_instead_of_stuck_in_readonly_confirm(self):
+        # 游戏不允许同种营销重复购买：活动结束（remaining==0）后重试购买是安全的。
+        # 旧的 confirmation_only 标记不得把任务锁死在“只读确认”，否则网络偶发失败
+        # 会导致营销永久中断。
+        task = {
+            "kind": "marketing", "status": "running", "trigger_at": 0,
+            "account": server._active_account_key,
+            "params": {"campaign": "airline", "confirmation_only": True},
+        }
+        page = "<a href='marketing_new.php'>marketing</a>"
+        with patch.object(server, "_get_route_planner"), \
+             patch.object(collector, "fetch", return_value=page), \
+             patch.object(collector, "_purchase_marketing",
+                          return_value=(True, "购买成功", 86400)) as purchase, \
+             patch.object(server, "_refresh_market_after_spend"), \
+             patch.object(server, "_publish_log"):
+            server._run_pending_task(task)
+        purchase.assert_called_once()
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["error"], None)
+
+    def test_active_marketing_reschedules_at_expiry_plus_sixty_seconds(self):
+        task = {
+            "kind": "marketing", "status": "running", "trigger_at": 0,
+            "account": server._active_account_key,
+            "params": {"campaign": "eco"},
+        }
+        page = (
+            "<a href='marketing_new.php'>marketing</a>"
+            "<tr><td><span class='glyphicons glyphicons-leaf'></span></td>"
+            "<td id='eTimer'></td></tr><script>timer('eTimer',1000);</script>"
+        )
+        with patch.object(server, "_get_route_planner"), \
+             patch.object(collector, "fetch", return_value=page), \
+             patch.object(collector, "_purchase_marketing") as purchase, \
+             patch.object(server.time, "time", return_value=100):
+            server._run_pending_task(task)
+        self.assertEqual(task["status"], "pending")
+        self.assertEqual(task["trigger_at"], 1160)
         purchase.assert_not_called()
 
     def test_unknown_marketing_task_is_failed_without_network_access(self):

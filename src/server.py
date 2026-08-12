@@ -1044,20 +1044,22 @@ def _run_pending_task(task: dict) -> None:
         import collector as ext
         page = ext.fetch(ext.MARKETING, referer=ext.HOME)
         if not ext._valid_marketing_page(page):
-            _defer_online_failure(task, "marketing", f"{label}页面暂时无法确认，未执行购买")
+            _defer_online_failure(task, "marketing", "营销状态暂时无法确认，未执行购买")
             return
         remaining = int(ext._parse_active_marketing(page).get(campaign, 0) or 0)
         if remaining > 0:
             task["trigger_at"] = time.time() + remaining + 60
             task["status"] = "pending"
             task["error"] = None
+            task.pop("retry", None)
             return
         ok, message, renewed = ext._purchase_marketing(state_key, label, known_inactive=True)
         if not ok:
-            _defer_online_failure(task, "marketing", f"{label}：{message}")
+            message = re.sub(rf"^\s*{re.escape(label)}\s*[：:]?\s*", "", str(message or ""))
+            _defer_online_failure(task, "marketing", message or "购买结果暂未确认")
             return
-        _publish_log(f"📣 {message}，已按活动到期时间安排下次续期")
         _refresh_market_after_spend()
+        _publish_log(f"📣 {label}购买成功，已按活动到期时间安排下次续期")
         task["trigger_at"] = time.time() + max(300, renewed or (86400 if campaign == "airline" else 43200)) + 60
         task["status"] = "pending"
         task["error"] = None
@@ -1474,7 +1476,7 @@ def _run_pending_task(task: dict) -> None:
                  "started_at": float(task["completed_at"])},
                 jitter=0,
             )
-        msg = f"🛫 {reg} 已放行（航线 {route_id}，CI {ci}）"
+        msg = f"🛫 {reg} 已放行（航线{route_id}，CI{ci}）"
         _append_log(msg)
         _broadcast_sse({"type": "log", "line": msg})
         return
@@ -2244,6 +2246,20 @@ _AIR_DETAIL_RE = re.compile(r"飞机详情\s*\[(\d+)/(\d+)\]\s+(.+)")
 
 # ===== 路由 =====
 
+_DASHBOARD_FLEET_FIELDS = (
+    "飞机ID", "注册号", "枢纽分类", "飞行时长", "客机组数量",
+    "CO2减排放", "飞行速度增加", "耗油量减少", "需求状态",
+    "_pending_build", "_operation_state", "_operation_until",
+)
+
+
+def _dashboard_fleet_snapshot(rows: list[dict]) -> list[dict]:
+    """首页只内嵌首屏表格字段；完整机队随后由 /api/fleet 静默补齐。"""
+    return [
+        {key: row[key] for key in _DASHBOARD_FLEET_FIELDS if row.get(key) not in (None, "")}
+        for row in rows
+    ]
+
 @app.route("/")
 def index():
     fleet = _fleet_rows()
@@ -2264,11 +2280,15 @@ def index():
         except Exception:
             market = None
     maint = _maintenance_payload()
+    with _run_lock:
+        initial_running = bool(_run_status.get("running"))
+        initial_mode = str(_run_status.get("mode", ""))
     return render_template(
         "index.html", csrf_token=_csrf_token,
         account=_active_credentials()[0],
+        initial_running=initial_running, initial_mode=initial_mode,
         dashboard_bootstrap={
-            "fleet": fleet, "hubs": hubs,
+            "fleet": _dashboard_fleet_snapshot(fleet), "hubs": hubs,
             "market": market, "maint": maint,
         },
     )
@@ -2702,7 +2722,7 @@ def api_route_build():
             return jsonify({"ok": False, "error": "出发机场无效"}), 400
         eco_val = ("" if is_cargo else (economy if economy is not None
                    else max(0, capacity - 2 * business - 3 * first)))
-        retrofit_val = data.get("retrofit", "全部")
+        retrofit_val = data.get("retrofit", "all")
         retrofit_mods = _retrofit_mods(retrofit_val)
         if retrofit_val and not retrofit_mods.issubset({"co2", "speed", "fuel"}):
             return jsonify({"ok": False, "error": f"改装配置无效: {retrofit_val}"}), 400
@@ -2715,9 +2735,10 @@ def api_route_build():
         )
         layout_text = (f"L{cargo_l}%/H{cargo_h}%" if is_cargo
                        else f"Y{eco_val}/J{business}/F{first}")
+        retrofit_display = "全部" if retrofit_val == "all" else (retrofit_val or "跳过")
         _publish_log(
-            f"💺 仓位配置：{layout_text}｜引擎型号 {aircraft.get('ename') or engine_val} ({engine_val})\n"
-            f" {retrofit_val or '跳过'} 改装"
+            f"💺 仓位配置：{layout_text}｜引擎型号 {aircraft.get('ename') or engine_val} ({engine_val})"
+            f" {retrofit_display} 改装"
         )
         # 建设前资金闸门：以当前余额和本地收益引擎估算总投入，保留运营现金。
         preflight = rp.estimate_route_local(
@@ -2736,9 +2757,9 @@ def api_route_build():
         _publish_log(
             f"📊 航程预计 {float(preflight.get('distance_km', 0) or 0):,.0f} km"
             f"｜航线{stopover_text}｜单程 {float(preflight.get('flight_hours', 0) or 0):.2f} 小时｜\n"
-            f" 预估日收益 ${float(preflight.get('revenue_per_day', 0) or 0):,.0f}｜"
+            f"   预估日收益 ${float(preflight.get('revenue_per_day', 0) or 0):,.0f}｜"
             f"净利 ${float(preflight.get('net_per_day', 0) or 0):,.0f}｜\n"
-            f" 预计投入 ${investment:,.0f}｜{payback if payback is not None else '未知'} 天回本"
+            f"   预计投入 ${investment:,.0f}｜{payback if payback is not None else '未知'} 天回本"
         )
         # 先只读确认是否属于“已购机后的恢复”。已有飞机不再重复计入投资，
         # 这样响应丢失后的低余额状态仍能继续建线；查询未知则不执行任何写操作。

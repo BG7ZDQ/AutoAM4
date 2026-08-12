@@ -55,7 +55,7 @@ def _print_wait_for_price(label: str, price: float, threshold: float,
     """本轮不补货的说明"""
     display = f"{label} " if label == "CO₂" else label
     if capacity <= 0:
-        print(f"{display} 已达配额极限，暂不补货。", flush=True)
+        print(f"{display}已达配额极限，暂不补货。", flush=True)
         return
     print(f"{display}价格过高 (${price:g}/1000{unit})，暂不补货。",flush=True,)
 

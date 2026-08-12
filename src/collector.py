@@ -202,14 +202,17 @@ def _do_curl(url: str, data: str | None, output: Path | None, referer: str) -> s
 
 
 def _relogin():
-    """重新登录以刷新会话。"""
+    """重新登录并确认会话确实恢复。"""
     try:
         _do_curl(HOME, data=None, output=None, referer="")
         _do_curl(LOGIN, data=_login_payload(EMAIL, PASSWORD),
                  output=None, referer=HOME)
-    except subprocess.CalledProcessError:
-        # 登录本身失败也不抛，交给上层继续重试
-        pass
+        verified = _do_curl(HOME, data=None, output=None, referer="")
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError("AM4 重新登录请求失败") from exc
+    if "headerAccount" not in verified:
+        raise RuntimeError("AM4 重新登录未成功，请检查账号、密码或登录页面是否变化")
+    _mark_account()
 
 
 def _is_logged_in() -> bool:
@@ -285,7 +288,12 @@ def _ensure_login() -> bool:
         _do_curl(HOME, data=None, output=None, referer="")
         payload = _login_payload(EMAIL, PASSWORD)
         _do_curl(LOGIN, data=payload, output=None, referer=HOME)
-        print("Cookie 失效，已尝试重新登录", flush=True)
+        # 登录接口即使拒绝凭据也可能返回 HTTP 200；必须重新读主页验证，
+        # 不能把“请求已发送”当作“登录成功”。
+        verified = _do_curl(HOME, data=None, output=None, referer="")
+        if "headerAccount" not in verified:
+            raise RuntimeError("AM4 登录未成功，请检查账号、密码或登录页面是否变化")
+        print("Cookie 已刷新，登录验证成功", flush=True)
     _mark_account()
     return True
 
@@ -733,14 +741,18 @@ def _purchase_marketing(state_key: str, label: str,
     except Exception as exc:
         return False, str(exc), 0
 
-    # 写请求只发一次；随后只读页面确认。即使响应丢失，也不会因重试而重复扣款。
+    # 写请求只发一次；同一活动在游戏侧不可重复购买，因此响应丢失时
+    # 直接由任务层退避后重试即可——重试会先读营销页：已生效则按到期
+    # 时间调度，未生效才重新购买，天然幂等。
     after_page = fetch(MARKETING, referer=HOME)
     renewed = (_parse_active_marketing(after_page).get(active_key, 0)
                if _valid_marketing_page(after_page) else 0)
     if renewed > 0:
-        return True, f"{label}购买成功", renewed
+        return True, "购买成功", renewed
     error = _marketing_response_error(response)
-    return False, error or f"{label}已购买，但无法确认", 0
+    if error:
+        return False, error, 0
+    return False, "购买请求已发送，结果暂未确认", 0
 
 
 def fetch_all_mods(mod_ids_at_base: dict[str, str]) -> dict[str, dict | None]:
@@ -756,7 +768,7 @@ def fetch_all_mods(mod_ids_at_base: dict[str, str]) -> dict[str, dict | None]:
         html_text = fetch(
             f"{BASE}/maint_plan_do.php?type=modify&id={ac_id}",
             referer=MAINT_PLAN,
-            label=f"  已获取 {reg} 的改装信息 [{i}/{total}]",
+            label=f"已获取 {reg} 的改装信息 [{i}/{total}]",
         )
         mod_map[ac_id] = parse_modify_page(html_text)
     return mod_map
@@ -1150,13 +1162,13 @@ def run_once(takeoff: bool = False):
     print("\n=== 获取市场数据 ===", flush=True)
 
     fuel_html = fetch(FUEL, referer=HOME, label="正在获取燃油价格")
-    co2_html = fetch(CO2, referer=HOME, label="正在获取 CO2 价格")
+    co2_html = fetch(CO2, referer=HOME, label="正在获取 CO₂ 价格")
     market = parse_market_data(home_html, fuel_html, co2_html)
     save_market_data(market)
     if market["balance"]:
         print(f"当前余额: ${market['balance']}", flush=True)
-        print(f"CO2 配额: {market['co2_qty']};\n燃油库存: {market['fuel_qty']} Lbs;", flush=True)
-        print(f"CO2 价格: ${market['co2_price']} / 1000 配额;\n燃油价格: ${market['fuel_price']} / 1000 Lbs;", flush=True)
+        print(f"CO₂配额: {market['co2_qty']};\n燃油库存: {market['fuel_qty']} Lbs;", flush=True)
+        print(f"CO₂价格: ${market['co2_price']}/1000;\n燃油价格: ${market['fuel_price']}/1000 Lbs;", flush=True)
     else:
         print("⚠ 市场数据解析失败", flush=True)
     # 全量刷新同样推送市场数据，让前端 market-bar 即时更新（与轻量循环一致）
@@ -1446,8 +1458,8 @@ def run_once(takeoff: bool = False):
     finished_ts = _now_bjt().strftime("%Y-%m-%d %H:%M:%S")
     elapsed = _format_elapsed(time.monotonic() - started_mono)
 
-    print(f"已更新 {total_count} 架飞机数据")
-    print(f"已查询 {known_mods} 架飞机改装状态")
+    print(f"已更新 {total_count} 架飞机的数据")
+    print(f"已查询 {known_mods} 架飞机的改装状态")
     print(f"已获取 {maint_total} 条检修数据")
 
     print(f"\n{'='*30}")
@@ -1525,7 +1537,7 @@ def run_cycle():
     except Exception:
         pass
     print(f"__HUBS__{json.dumps([h['name'] for h in hubs], ensure_ascii=False)}", flush=True)
-    print(f"当前共有 {len(hubs)} 个枢纽)")
+    print(f"当前共有 {len(hubs)} 个枢纽")
 
     # 检测新增飞机：对比现有 CSV 的飞机ID，只给新飞机登记详情
     existing_fleet = load_existing_csv(FLEET_CSV)
@@ -1704,11 +1716,11 @@ def run_preclose_topup() -> None:
         print("价格高于采购阈值，等待下一次检查", flush=True)
         return
 
-    print(f"燃油价格: ${fuel_price:g} / 1000 Lbs; CO2 价格: ${co2_price:g} / 1000 配额", flush=True)
+    print(f"CO₂ 价格: ${co2_price:g}/1000 配额;\n燃油价格: ${fuel_price:g}/1000 Lbs;", flush=True)
 
     fuel_html = (fetch(FUEL, referer=HOME, label="正在更新燃油信息")
                  if check_fuel else "")
-    co2_html = (fetch(CO2, referer=HOME, label="正在更新 CO2 信息")
+    co2_html = (fetch(CO2, referer=HOME, label="正在更新 CO₂ 信息")
                 if check_co2 else "")
     purchased = auto_buy(fuel_html, co2_html, market.get("balance"))
     if not apply_purchase_to_market(market, purchased):
