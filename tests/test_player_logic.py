@@ -573,6 +573,10 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertIn("let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }}", template)
         self.assertIn("restoreServerSnapshot(restoreDashboardCache())", template)
         self.assertIn("a.length+c.length===0&&fullFd.length+fullFdc.length>0", template)
+        self.assertLess(template.index("window.__AM4_CACHE_STATUS='hit'"),
+                        template.index("let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }}"))
+        self.assertIn("window.__AM4_CACHE_WRITE_STATUS='ok'", template)
+        self.assertIn("window.addEventListener('pagehide',saveDashboardCache)", template)
         self.assertIn("function logClass(line)", template)
         self.assertIn("line.includes('not_ready'))return'warn'", template)
         self.assertIn(".console .warn{color:var(--wr)}", template)
