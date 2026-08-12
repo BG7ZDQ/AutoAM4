@@ -563,6 +563,15 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertIn("fd.splice(paxAt,1,ac)", template)
         self.assertIn("ac['_operation_state']=old['_operation_state']", template)
 
+    def test_dashboard_restores_theme_before_paint_and_caches_by_account(self):
+        template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertLess(template.index("document.documentElement.dataset.theme"),
+                        template.index("<title>AM4 机队中心</title>"))
+        self.assertIn(":root{color-scheme:light", template)
+        self.assertIn("DASH_CACHE_KEY='am4-dashboard-cache-v1'", template)
+        self.assertIn("String(SERVER_ACCOUNT||'').toLowerCase()", template)
+        self.assertIn("function logClass(line)", template)
+
 
 class ServerSchedulingTests(unittest.TestCase):
     def setUp(self):

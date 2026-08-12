@@ -2246,7 +2246,10 @@ _AIR_DETAIL_RE = re.compile(r"飞机详情\s*\[(\d+)/(\d+)\]\s+(.+)")
 
 @app.route("/")
 def index():
-    return render_template("index.html", csrf_token=_csrf_token)
+    return render_template(
+        "index.html", csrf_token=_csrf_token,
+        account=_active_credentials()[0],
+    )
 
 
 @app.route("/api/status")
