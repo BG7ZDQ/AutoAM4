@@ -560,8 +560,18 @@ class SecurityAndPersistenceTests(unittest.TestCase):
 
     def test_incremental_aircraft_updates_in_place_and_keeps_operation_state(self):
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
-        self.assertIn("fd.splice(paxAt,1,ac)", template)
-        self.assertIn("ac['_operation_state']=old['_operation_state']", template)
+        self.assertIn("function applyFleetView()", template)
+        self.assertIn("setTimeout(applyFleetView,80)", template)
+        self.assertIn("if(!ac['_operation_state'])ac['_operation_state']=old['_operation_state']", template)
+        self.assertIn("function fleetRowsAll(){return fullFd.concat(fullFdc)}", template)
+        self.assertNotIn("...(hub&&{hub})", template)
+
+    def test_mobile_fleet_controls_are_compact_and_horizontally_scrollable(self):
+        template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertIn(".hub-chips{flex-wrap:nowrap;overflow-x:auto", template)
+        self.assertIn(".toolbar>#hf,.toolbar>button{display:none}", template)
+        self.assertIn(".reg-cell{white-space:nowrap}", template)
+        self.assertIn('class="hub-scroll"', template)
 
     def test_dashboard_restores_theme_before_paint_and_caches_by_account(self):
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
