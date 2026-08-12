@@ -571,6 +571,8 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertIn("DASH_CACHE_KEY='am4-dashboard-cache-v1'", template)
         self.assertIn("String(SERVER_ACCOUNT||'').toLowerCase()", template)
         self.assertIn("function logClass(line)", template)
+        self.assertIn("line.includes('not_ready'))return'warn'", template)
+        self.assertIn(".console .warn{color:var(--wr)}", template)
 
 
 class ServerSchedulingTests(unittest.TestCase):

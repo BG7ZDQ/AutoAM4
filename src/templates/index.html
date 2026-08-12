@@ -69,7 +69,7 @@ td{padding:8px 12px;border-bottom:1px solid rgba(128,128,128,.15);white-space:no
 .tab-content{margin-top:16px}
 .tab{padding:10px 20px;cursor:pointer;font-weight:600;font-size:.9rem;color:var(--t2);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s}.tab.active{color:var(--ac);border-bottom-color:var(--ac)}.tab:hover{color:var(--t)}
 .console{background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;max-height:300px;overflow-y:auto;font-family:Consolas,monospace;font-size:.8rem;line-height:1.6;color:var(--t2);white-space:pre-wrap;word-break:break-all}
-.console .dim{color:var(--t3)}.console .err{color:var(--dg)}.console .ok{color:var(--ac2)}
+.console .dim{color:var(--t3)}.console .warn{color:var(--wr)}.console .err{color:var(--dg)}.console .ok{color:var(--ac2)}
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(128,128,128,.2);border-top-color:var(--ac);border-radius:50%;animation:spin .6s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
 .empty{text-align:center;padding:40px 16px;color:var(--t3)}.empty .icon{font-size:3rem;margin-bottom:8px}
 .log-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px}
@@ -220,7 +220,7 @@ function foldLog(lines){
   for(let l of fl){let p=isProgLine(l);if(p&&prev){out[out.length-1]=l;continue}out.push(l);prev=p}
   return out
 }
-function logClass(line){line=String(line||'');if(/[❌⚠]/.test(line)||line.includes('失败')||line.includes('异常')||line.includes('手动停止')||line.includes('未成功'))return'err';if(/[✅✓🛫]/.test(line)||line.includes('成功')||line.includes('已完成'))return'ok';return'dim'}
+function logClass(line){line=String(line||'');if(/[❌⚠]/.test(line)||line.includes('失败')||line.includes('异常')||line.includes('手动停止')||line.includes('未成功'))return'err';if(line.includes('not_ready'))return'warn';if(/[✅✓🛫]/.test(line)||line.includes('成功')||line.includes('已完成'))return'ok';return'dim'}
 function logHTML(line,extra){return'<div class="'+(extra||'')+logClass(line)+'">'+eh(line)+'</div>'}
 function all(line){let d=document.getElementById('lc');
   let isProg=isProgLine(line);
