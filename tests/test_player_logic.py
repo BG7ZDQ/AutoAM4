@@ -776,8 +776,21 @@ class ServerSchedulingTests(unittest.TestCase):
             building = server._decorate_operation_state(
                 {"注册号": "BUILD-1", "建设状态": "建设中"}, {})
         self.assertEqual(flying["_operation_state"], "flying")
+        self.assertEqual(flying["_operation_until"], 1200)
         self.assertEqual(maintenance["_operation_state"], "maintenance")
+        self.assertEqual(maintenance["_operation_until"], 1300)
         self.assertEqual(building["_operation_state"], "building")
+
+    def test_operation_status_payload_is_minimal_and_realtime_ready(self):
+        with patch.object(server.time, "time", return_value=1_000):
+            payload = server._operation_status_payload({
+                "fid-1": {"注册号": "AIR-1", "预计落地时间戳": "1200"},
+                "fid-2": {"注册号": "MAINT-1", "维护改装结束时间戳": "1300"},
+            })
+        self.assertEqual(payload, [
+            {"fid": "fid-1", "reg": "AIR-1", "state": "flying", "until": 1200.0},
+            {"fid": "fid-2", "reg": "MAINT-1", "state": "maintenance", "until": 1300.0},
+        ])
 
     def test_takeoff_stops_when_latest_demand_is_insufficient(self):
         planner = Mock()

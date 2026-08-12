@@ -277,6 +277,7 @@ def _refresh_market_after_spend() -> None:
             with _maint_cache_lock:
                 _home_status_cache = status_map
                 _home_status_ts = time.time()
+            _broadcast_operation_statuses(status_map)
         _broadcast_sse({"type": "market", "data": cache})
     except Exception as exc:
         _append_log(f"⚠ 扣款成功，但余额即时刷新失败：{exc}")
@@ -316,6 +317,7 @@ def _refresh_market_rt_worker():
             with _maint_cache_lock:
                 _home_status_cache = status_map
                 _home_status_ts = time.time()
+            _broadcast_operation_statuses(status_map)
         fuel_html = ext._do_curl(ext.FUEL, data=None, output=None, referer=ext.HOME)
         co2_html = ext._do_curl(ext.CO2, data=None, output=None, referer=ext.HOME)
         market = ext.parse_market_data(home_html, fuel_html, co2_html)
@@ -1381,6 +1383,7 @@ def _run_pending_task(task: dict) -> None:
             task["error"] = None
             task["completed_at"] = time.time()
             task.pop("retry", None)
+            _broadcast_operation_status(reg, "grounded", fid=str(params.get("fid", "")))
             _publish_log(f"{reg} 已人工停飞，自动起飞待办已结束。")
             return
         refreshed = _refresh_fleet_row(
@@ -1447,6 +1450,8 @@ def _run_pending_task(task: dict) -> None:
         if duration > 0:
             # 接管后的每次成功起飞都继续排下一班，形成持续运营闭环。
             ready_at = time.time() + duration
+            _broadcast_operation_status(
+                reg, "flying", ready_at, fid=str(params.get("fid", "")))
             _add_takeoff_task(
                 reg, route_id, ci,
                 ready_at + _TAKEOFF_READY_BUFFER_SECONDS,
@@ -1455,6 +1460,8 @@ def _run_pending_task(task: dict) -> None:
                 jitter=0, ready_at=ready_at, reason="本次飞行落地",
             )
         else:
+            _broadcast_operation_status(
+                reg, "flying", fid=str(params.get("fid", "")))
             # 新建航线在首航前可能暂时返回 00:00:00。使用独立的只读任务
             # 对账预计落地时间，避免重复起飞，并保证首航后运营链不断掉。
             _add_pending_task(
@@ -1756,6 +1763,7 @@ def _decorate_operation_state(row: dict, status: dict | None = None) -> dict:
     """用主页状态装饰机队行；只添加前端字段，不写入 CSV。"""
     if row.get("_pending_build") or str(row.get("建设状态", "")).strip():
         row["_operation_state"] = "building"
+        row["_operation_until"] = 0
         return row
     status = status if isinstance(status, dict) else {}
     try:
@@ -1766,12 +1774,52 @@ def _decorate_operation_state(row: dict, status: dict | None = None) -> dict:
         arrival = float(status.get("预计落地时间戳", 0) or 0)
     except (TypeError, ValueError):
         arrival = 0.0
-    row["_operation_state"] = (
-        "maintenance" if maintenance_end > time.time()
-        else "flying" if arrival > time.time()
-        else "grounded"
-    )
+    now = time.time()
+    if maintenance_end > now:
+        row["_operation_state"] = "maintenance"
+        row["_operation_until"] = maintenance_end
+    elif arrival > now:
+        row["_operation_state"] = "flying"
+        row["_operation_until"] = arrival
+    else:
+        row["_operation_state"] = "grounded"
+        row["_operation_until"] = 0
     return row
+
+
+def _operation_status_payload(status_map: dict | None) -> list[dict]:
+    """把主页状态压缩成前端颜色更新所需的最小载荷。"""
+    payload = []
+    for fid, status in (status_map or {}).items():
+        if not isinstance(status, dict):
+            continue
+        row = {
+            "飞机ID": str(fid),
+            "注册号": str(status.get("注册号", "")),
+        }
+        _decorate_operation_state(row, status)
+        payload.append({
+            "fid": row["飞机ID"],
+            "reg": row["注册号"],
+            "state": row["_operation_state"],
+            "until": row["_operation_until"],
+        })
+    return payload
+
+
+def _broadcast_operation_statuses(status_map: dict | None) -> None:
+    payload = _operation_status_payload(status_map)
+    if payload:
+        _broadcast_sse({"type": "fleet_status", "data": payload})
+
+
+def _broadcast_operation_status(reg: str, state: str, until: float = 0,
+                                fid: str = "") -> None:
+    _broadcast_sse({
+        "type": "fleet_status",
+        "data": [{"fid": str(fid), "reg": str(reg),
+                  "state": state, "until": float(until or 0)}],
+    })
 
 
 def _write_fleet_csv(rows: list[dict], *, already_locked: bool = False) -> bool:
@@ -2001,6 +2049,7 @@ def _latest_home_maintenance(planner, reg: str,
         with _maint_cache_lock:
             _home_status_cache = fresh
             _home_status_ts = now
+        _broadcast_operation_statuses(fresh)
         cached = fresh
     target = str(reg or "").strip().upper()
     return next((status for status in cached.values()
@@ -3180,6 +3229,7 @@ def api_run():
                             with _maint_cache_lock:
                                 _home_status_cache = status_map
                                 _home_status_ts = time.time()
+                            _broadcast_operation_statuses(status_map)
                         continue
                     except Exception:
                         pass
