@@ -1,0 +1,36 @@
+# Secrets and local session state
+.env
+.env.*
+!.env.example
+src/.csrf_token
+*cookiejar*
+
+# Runtime data and logs
+outputs/
+src/outputs/
+*.log
+*.log.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Temporary development artifacts
+src/fetch_*.py
+.codex-*/
+*.tar.gz
+*.tmp
+*.bak
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

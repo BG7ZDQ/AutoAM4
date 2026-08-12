@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>AM4 机队中心</title><style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0f1117;--card:#1a1d27;--brd:#2a2e3a;--t:#e0e4f0;--t2:#8b90a5;--t3:#5c6175;--ac:#4da6ff;--ac2:#00c9a7;--wr:#f5a623;--dg:#ff5c5c;--r:12px;--sh:0 2px 12px rgba(0,0,0,.3);--thb:#1e2130}
+body.light{--bg:#f4f5f7;--card:#fff;--brd:#dde0e5;--t:#1a1d27;--t2:#6b7085;--t3:#9ca0b0;--ac:#2563eb;--ac2:#059669;--wr:#d97706;--dg:#dc2626;--sh:0 2px 12px rgba(0,0,0,.08);--thb:#f8f9fb}
+html{font-size:16px}body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;background:var(--bg);color:var(--t);line-height:1.5;min-height:100vh}
+.app{max-width:1400px;margin:0 auto;padding:16px}
+.header{display:flex;flex-wrap:nowrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;padding:12px 0 16px;border-bottom:1px solid var(--brd)}
+.header-main{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;flex:1 1 auto;min-width:0}
+.header-meta{display:flex;align-items:center;gap:6px;min-width:0;flex-shrink:0}
+.header h1{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:1}
+.header h1{font-size:1.5rem;font-weight:700;display:flex;align-items:center;gap:8px}.header h1 .icon{font-size:1.8rem}
+.header-actions{display:flex;gap:8px;flex-wrap:nowrap;align-items:center;flex-shrink:0}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap}
+.btn-primary{background:var(--ac);color:#fff}.btn-success{background:var(--ac2);color:#fff}.btn-danger{background:var(--dg);color:#fff}
+.btn-outline{background:transparent;border:1px solid var(--brd);color:var(--t)}.btn-outline:hover{border-color:var(--ac);color:var(--ac)}
+.btn-sm{padding:5px 12px;font-size:.8rem}.btn-icon{width:36px;height:36px;padding:0;justify-content:center;border-radius:50%;font-size:1.1rem}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.b-short{display:none}
+.b-full{display:inline}
+.market-bar{display:flex;flex-wrap:nowrap;align-items:center;gap:12px;background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:10px 18px;margin-bottom:16px;font-size:.85rem;box-shadow:var(--sh)}
+.market-bar .mk-item{display:inline-flex;align-items:baseline;gap:8px;color:var(--t);white-space:nowrap}
+.market-bar .mk-label{color:var(--t);font-size:.75rem;font-weight:600}
+.market-bar .mk-val{font-weight:700;font-size:1rem;color:var(--ac)}
+.market-bar .mk-val2{font-weight:400;font-size:.9rem;color:var(--t3)}
+.market-bar .mk-info{color:var(--t2);font-size:.8rem}
+.market-bar .mk-info b{color:var(--t)}
+.market-bar .mk-div{color:var(--t3);opacity:.4;padding:0 4px}
+@media(max-width:768px){.market-bar{flex-wrap:wrap;gap:6px 12px}.market-bar .mk-item{flex:1 1 100%}}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.stat-card{background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:16px;box-shadow:var(--sh)}
+.stat-card .label{font-size:.8rem;color:var(--t2);margin-bottom:4px}.stat-card .value{font-size:1.8rem;font-weight:700}.stat-card .sub{font-size:.75rem;color:var(--t3);margin-top:2px}
+.stat-card.accent{border-left:3px solid var(--ac)}.stat-card.success{border-left:3px solid var(--ac2)}.stat-card.warn{border-left:3px solid var(--wr)}
+.err{color:var(--dg)}
+.progress-wrap{display:none;margin-bottom:16px}.progress-wrap.show{display:block}
+.progress-info{display:flex;justify-content:space-between;margin-bottom:4px;font-size:.78rem;color:var(--t2)}
+.progress-bar-bg{height:6px;background:var(--brd);border-radius:3px;overflow:hidden}
+.progress-bar-fg{height:100%;background:var(--ac);border-radius:3px;transition:width .3s;width:0%}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:center}
+.search-box{flex:1 1 200px;min-width:160px;padding:8px 14px;border-radius:8px;border:1px solid var(--brd);background:var(--card);color:var(--t);font-size:.9rem;outline:none}.search-box:focus{border-color:var(--ac)}.search-box::placeholder{color:var(--t3)}
+.filter-select{padding:8px 12px;border-radius:8px;border:1px solid var(--brd);background:var(--card);color:var(--t);font-size:.9rem;cursor:pointer;outline:none}
+.table-wrap{background:var(--card);border:1px solid var(--brd);border-radius:var(--r);overflow:hidden;box-shadow:var(--sh)}
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{padding:10px 12px;text-align:left;font-weight:600;color:var(--t2);cursor:pointer;user-select:none;white-space:nowrap;border-bottom:1px solid var(--brd);background:var(--thb)}th:hover{color:var(--ac)}th .sort-arrow{margin-left:4px;font-size:.7rem}
+td{padding:8px 12px;border-bottom:1px solid rgba(128,128,128,.15);white-space:nowrap}tbody tr:hover{background:rgba(128,128,128,.06)}tbody tr:last-child td{border-bottom:none}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:.75rem;font-weight:600;cursor:pointer}
+.badge-green{background:rgba(0,201,167,.15);color:var(--ac2)}.badge-red{background:rgba(255,92,92,.15);color:var(--dg)}.badge-gray{background:rgba(139,144,165,.15);color:var(--t2)}.badge-blue{background:rgba(77,166,255,.15);color:var(--ac)}.badge-warn{background:rgba(245,166,35,.15);color:var(--wr)}
+.maint-badge{font-size:.72rem;padding:1px 6px;margin-left:4px;border-radius:10px;cursor:default}
+.maint-h{background:rgba(245,166,35,.13);color:var(--wr)}.maint-w{background:rgba(255,92,92,.15);color:var(--dg)}
+.maint-sec{margin-bottom:14px}
+.msec-head{font-weight:600;font-size:.9rem;margin-bottom:6px;color:var(--t);display:flex;align-items:center;justify-content:space-between}
+.msec-sub{color:var(--t2);font-weight:400;font-size:.78rem;margin-left:4px}
+.maint-sec .table-scroll{max-height:280px;overflow-y:auto}
+.maint-line{line-height:1.5}
+.maint-line .reg{font-weight:600;color:var(--ac)}
+.maint-line .h{color:var(--wr);margin-left:6px}
+.maint-line .w{color:var(--dg);margin-left:6px}
+.maint-break{border-top:1px dashed var(--brd);margin:4px 0}
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--brd)}
+.tab-content{margin-top:16px}
+.tab{padding:10px 20px;cursor:pointer;font-weight:600;font-size:.9rem;color:var(--t2);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s}.tab.active{color:var(--ac);border-bottom-color:var(--ac)}.tab:hover{color:var(--t)}
+.console{background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;max-height:300px;overflow-y:auto;font-family:Consolas,monospace;font-size:.8rem;line-height:1.6;color:var(--t2);white-space:pre-wrap;word-break:break-all}
+.console .dim{color:var(--t3)}.console .err{color:var(--dg)}.console .ok{color:var(--ac2)}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(128,128,128,.2);border-top-color:var(--ac);border-radius:50%;animation:spin .6s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.empty{text-align:center;padding:40px 16px;color:var(--t3)}.empty .icon{font-size:3rem;margin-bottom:8px}
+.log-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px}
+.running-indicator{display:flex;align-items:center;gap:6px;color:var(--wr);font-weight:600}
+.mode-tag{font-size:.75rem;padding:2px 8px;border-radius:4px;background:rgba(77,166,255,.15);color:var(--ac)}
+.hub-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}
+.hub-chip{padding:4px 12px;border-radius:20px;border:1px solid var(--brd);font-size:.8rem;cursor:pointer;transition:all .2s;color:var(--t2);background:var(--card)}.hub-chip:hover,.hub-chip.active{border-color:var(--ac);color:var(--ac)}.hub-chip.active{background:rgba(77,166,255,.15)}.hub-chip .count{color:var(--t3);margin-left:4px}
+.sse-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px}.sse-dot.on{background:var(--ac2);box-shadow:0 0 6px var(--ac2)}.sse-dot.off{background:var(--dg)}
+.dm-pop{display:none;position:fixed;z-index:99999;background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:22px 28px;font-size:1rem;box-shadow:0 8px 32px rgba(0,0,0,.5);white-space:nowrap;width:auto}
+.dm-pop.show{display:block}
+.dm-pop .row-line{margin:2px 0}
+.dm-pop .row-line b{color:var(--ac)}
+@media(max-width:768px){.header{flex-direction:column;align-items:stretch;gap:10px}.header-main{flex-direction:column;align-items:flex-start;gap:4px;width:100%}.header h1{font-size:1.15rem}.header h1 .icon{font-size:1.35rem}.mode-tag,.status-chip{font-size:.68rem;padding:2px 8px}#acctTag{max-width:88px}.header-actions{justify-content:flex-end;gap:6px}.stats-grid{grid-template-columns:repeat(3,1fr);gap:8px}.stat-card{padding:12px}.stat-card .value{font-size:1.4rem}th,td{padding:6px 8px;font-size:.78rem}.tab{padding:8px 14px;font-size:.8rem}.btn{padding:5px 10px;font-size:.75rem}.app{padding:10px}.btn-icon{width:32px;height:32px}.b-full{display:none}.b-short{display:inline}}
+@media(max-width:480px){.stats-grid{grid-template-columns:repeat(3,1fr);gap:6px}.header h1{font-size:1rem}.header h1 .icon{font-size:1.4rem}.header{gap:8px}.header-actions{gap:4px;flex-wrap:nowrap}.btn-sm{padding:4px 6px;font-size:.68rem}.btn{padding:4px 8px;font-size:.7rem}.btn-icon{width:30px;height:30px}.tab{padding:8px 10px;font-size:.75rem}.hub-chips{gap:4px}.hub-chip{font-size:.72rem;padding:3px 8px}#ft th,#ft td{font-size:.7rem;padding:4px}#ft th:nth-child(1),#ft td:nth-child(1){white-space:normal}}
+@keyframes rowFlash{0%{background:rgba(77,166,255,.35)}100%{background:transparent}}.row-new{animation:rowFlash 5s ease-out forwards}
+/* 头部运行状态芯片 */
+.status-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:600;background:rgba(139,144,165,.12);color:var(--t2);margin-left:6px;border:1px solid transparent;vertical-align:2px}
+.status-chip .dot{width:7px;height:7px;border-radius:50%;background:var(--t3);display:inline-block}
+.status-chip.running{background:rgba(245,166,35,.14);color:var(--wr);border-color:rgba(245,166,35,.35)}
+.status-chip.running .dot{background:var(--wr);animation:chipPulse 1.2s ease-in-out infinite}
+@keyframes chipPulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.75)}}
+/* 账号标签限宽：超长省略，绝不挤换行 */
+#acctTag{display:inline-block;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+/* 市场刷新指示 */
+.mk-spin{display:inline-block;width:12px;height:12px;border:2px solid rgba(128,128,128,.2);border-top-color:var(--ac);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-left:6px}
+/* 交互细节与可访问性 */
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--ac);outline-offset:2px}
+.btn{transition:transform .12s ease,background .15s ease}
+.btn:active{transform:scale(.97)}
+.stat-card{transition:transform .15s ease,box-shadow .15s ease}
+.stat-card:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(0,0,0,.28)}
+.tab{transition:color .15s ease}
+.tab:hover{color:var(--t)}
+.console::-webkit-scrollbar,.table-scroll::-webkit-scrollbar{width:8px;height:8px}
+.console::-webkit-scrollbar-thumb,.table-scroll::-webkit-scrollbar-thumb{background:rgba(128,128,128,.25);border-radius:4px}
+.console::-webkit-scrollbar-thumb:hover,.table-scroll::-webkit-scrollbar-thumb:hover{background:rgba(128,128,128,.4)}
+.console::-webkit-scrollbar-track,.table-scroll::-webkit-scrollbar-track{background:transparent}
+@media(max-width:768px){ #acctTag{max-width:180px} }
+/* 移动端页眉一行式：标题左、按钮右，状态芯片隐藏 */
+@media(max-width:768px){ .header{flex-direction:row;align-items:center;gap:8px;flex-wrap:nowrap} .header-main{flex-direction:row;align-items:center;gap:6px;flex:1 1 auto;min-width:0;flex-wrap:nowrap} .header-meta{display:none} .header h1{font-size:1.08rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex-shrink:1} .header-actions{flex-shrink:0;flex-wrap:nowrap} }
+/* 移动端细节：顶部留白 + 符号放大 */
+@media(max-width:768px){ .header{padding-top:calc(22px + env(safe-area-inset-top,0px))} .header h1 .icon{font-size:1.55rem} .tab{font-size:.85rem;padding:10px 16px} .btn{font-size:.78rem} .mk-label{font-size:.82rem} .mk-val{font-size:1.05rem} .stat-card .label{font-size:.85rem} }
+</style></head><body><div class="app">
+<div class="header"><div class="header-main"><h1><span class="icon">✈</span> AM4 机队中心 <span class="sse-dot off" id="sseDot"></span></h1><div class="header-meta"><span class="status-chip" id="runChip"><span class="dot"></span><span id="runChipTxt">空闲</span></span></div></div>
+<div class="header-actions">
+<button class="btn btn-outline btn-sm btn-icon" id="btnTheme" onclick="toggleTheme()">🌙</button>
+<button class="btn btn-outline btn-sm" onclick="refreshAll()">🔄 刷新</button>
+<button class="btn btn-success" id="btnRunLoop" onclick="run('loop')"><span class="b-full">🔁 循环运行</span><span class="b-short">🔁 循环</span></button>
+<button class="btn btn-danger" id="btnStop" onclick="stop()" style="display:none">⏹ 停止</button>
+</div></div>
+<div class="progress-wrap" id="pw"><div class="progress-info"><span id="pl">采集进度</span><span id="pp">0/0</span></div><div class="progress-bar-bg"><div class="progress-bar-fg" id="pb"></div></div></div>
+<div class="market-bar" id="marketBar"><span class="mk-item"><span class="mk-label">👤 账号</span> <span class="mk-val" id="acctTag">--</span></span><span class="mk-item"><span class="mk-label">⛽ 燃油价格</span> <span class="mk-val">$<span id="mkFuel">--</span></span> <span class="mk-label">🌿 CO₂价格</span> <span class="mk-val">$<span id="mkCo2">--</span></span></span><span class="mk-item"><span class="mk-label">已有燃油</span> <span class="mk-val2" id="mkFuelQty">--</span> Lbs <span class="mk-label">CO₂配额</span> <span class="mk-val2" id="mkCo2Qty">--</span></span><span class="mk-item"><span class="mk-label">更新时间</span> <span id="mkTime">--</span><span class="mk-spin" id="mkSpin" style="display:none"></span></span></div>
+<div class="stats-grid">
+<div class="stat-card accent"><div class="label">机队总数</div><div class="value" id="sf">--</div><div class="sub">架飞机</div></div>
+<div class="stat-card warn"><div class="label">枢纽数</div><div class="value" id="sh">--</div><div class="sub">个基地</div></div>
+<div class="stat-card success"><div class="label">余额</div><div class="value" id="sb">--</div><div class="sub">账户资金</div></div>
+</div>
+<div class="tabs"><div class="tab active" data-tab="fleet" onclick="st('fleet')">机队</div><div class="tab" data-tab="route" onclick="st('route')">开辟</div><div class="tab" data-tab="pending" onclick="st('pending')">待办</div><div class="tab" data-tab="maintenance" onclick="st('maintenance')">检修</div><div class="tab" data-tab="log" onclick="st('log')">日志</div></div>
+<div class="tab-content" id="tabFleet"><div class="hub-chips" id="hubChips"></div><div class="toolbar"><input class="search-box" id="si" placeholder="搜索注册号/机型..." oninput="ds()"><select class="filter-select" id="hf" onchange="oh()"><option value="">🏢 全部枢纽</option></select><button class="btn btn-outline btn-sm" onclick="rf()">✕ 重置</button></div><div class="msec-head"><span>🛫 客机 <span class="msec-sub" id="fiPax"></span></span><button class="btn btn-outline btn-sm" onclick="tog('paxWrap',this)">▼ 收起</button></div><div class="table-wrap" id="paxWrap"><div class="table-scroll"><table id="ft"><thead><tr><th data-sort="注册号" onclick="sf('注册号')">注册号<span class="sort-arrow"></span></th><th data-sort="枢纽分类" onclick="sf('枢纽分类')">枢纽</th><th data-sort="飞行时长" onclick="sf('飞行时长')">时长</th><th data-sort="改装状态" onclick="sf('改装状态')">改装</th><th data-sort="需求状态" onclick="sf('需求状态')">需求</th></tr></thead><tbody id="fb"><tr><td colspan="5" class="empty"><div class="icon">📭</div>暂无客机数据</td></tr></tbody></table></div></div><div class="msec-head" style="margin-top:16px"><span>📦 货机 <span class="msec-sub" id="fiCargo"></span></span><button class="btn btn-outline btn-sm" onclick="tog('cargoWrap',this)">▼ 收起</button></div><div class="table-wrap" id="cargoWrap"><div class="table-scroll"><table id="ftc"><thead><tr><th>注册号</th><th>枢纽</th><th>时长</th><th>改装</th><th>需求</th></tr></thead><tbody id="fbc"><tr><td colspan="5" class="empty"><div class="icon">📭</div>暂无货机数据</td></tr></tbody></table></div></div><div style="margin-top:8px;font-size:.75rem;color:var(--t3)" id="fi"></div></div>
+<div class="tab-content" id="tabRoute" style="display:none">
+<div class="route-card" style="background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:16px;box-shadow:var(--sh)">
+<div class="msec-head"><span>🛫 航线开辟</span></div>
+<div class="route-form" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-top:12px">
+<div><label class="mk-label">飞机型号</label><input class="search-box" id="rpAc" list="rpAcList" placeholder="输入机型关键字…（如 MC-21）" style="width:100%"><datalist id="rpAcList"></datalist></div>
+<div><label class="mk-label">发动机</label><select class="filter-select" id="rpEngine" style="width:100%"><option value="">请先选择机型</option></select></div>
+<div><label class="mk-label">每日飞行次数</label><div style="display:flex;gap:8px;align-items:center"><input type="number" class="search-box" id="rpTpd" value="6" min="1" max="20" style="min-width:80px;flex:1"><label class="mk-label" style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap;cursor:pointer"><input type="checkbox" id="rpMaximise" style="width:auto"> Maximise</label></div></div>
+<div><label class="mk-label">出发（枢纽）</label><select class="filter-select" id="rpDep" style="width:100%"><option value="">加载中…</option></select></div>
+</div>
+<div class="route-params" style="margin-top:12px;font-size:.78rem;color:var(--t2)">Realism 模式：客运载运系数 0.95 / 货运载运系数 0.95 / 油价 $600 / CO₂ $130 / 默认全改装 / 成本指数 200；班次 <span id="rpMaxH"></span></div>
+<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+<span class="msec-sub" id="rpCandInfo"></span>
+</div>
+<div class="table-scroll" id="rpCandWrap" style="display:none;margin-top:12px;max-height:380px"><table id="rt"><thead><tr><th>到达机场</th><th>距离</th><th>时长</th><th>班次/日</th><th id="rpDemandHead">需求 Y/J/F</th><th id="rpConfigHead">舱位 Y/J/F</th><th>收益/日</th><th>净利/日</th><th>回本</th></tr></thead><tbody id="rpCandList"></tbody></table></div>
+<div class="route-result" id="rpResult" style="display:none;margin-top:12px;background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:14px;font-size:.85rem"></div>
+</div>
+<div style="margin-top:8px;font-size:.75rem;color:var(--t3)">系统将根据条件自动计算所有候选航线；按每日净利降序，以供参考和自动建设。</div>
+</div>
+<div class="tab-content" id="tabPending" style="display:none"><div class="msec-head"><span>⏳ 待定任务 <span class="msec-sub" id="pc"></span></span></div><div class="table-scroll"><table id="pt"><thead><tr><th>任务</th><th>触发时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="ptb"><tr><td colspan="4" class="empty"><div class="icon">⏳</div>暂无待定任务</td></tr></tbody></table></div><div style="margin-top:8px;font-size:.75rem;color:var(--t3)">交付等待等任务会在指定时间自动触发下一步。</div></div><div class="tab-content" id="tabMaintenance" style="display:none"><div class="maint-req "><div class="maint-sec"><div class="msec-head"><span>✈️ 飞机检修预警 <span class="msec-sub" id="mnCount"></span></span></div><div class="table-scroll"><table id="mtNeed"><thead><tr><th>注册号</th><th>距A-Check</th><th>损坏率</th><th>状态</th></tr></thead><tbody id="moNeed"><tr><td colspan="4" class="empty"><div class="icon">🛡️</div>暂无检修预警，全部飞机状态良好</td></tr></tbody></table></div></div></div><div style="margin-top:8px;font-size:.75rem;color:var(--t3)" id="mi"></div></div>
+<div class="tab-content" id="tabLog" style="display:none"><div class="log-header"><span class="section-title">📋 运行日志</span><span id="rb" style="display:none" class="running-indicator"><span class="spinner"></span>运行中 <span class="mode-tag" id="mt"></span></span><button class="btn btn-outline btn-sm" onclick="window.location='/api/log/download'">⬇ 原始日志</button></div><div class="console" id="lc"><span class="dim">等待首次运行…</span></div><div style="margin-top:8px;font-size:.75rem;color:var(--t3)">上次运行: <span id="lr">--</span></div></div>
+</div>
+<script>
+let CSRF="{{ csrf_token }}";
+let fd=[],fdc=[],md=[],cs='注册号',cd='asc',_to=null,hs={},shc='',r=false,fa=true,allHubs=[],logStart=0,logTotal=0,lgBusy=false,playerSpendable=null,playerCashReserve=0;
+(function(){let s=localStorage.getItem('am4-theme');if(s==='light'){document.body.classList.add('light');document.getElementById('btnTheme').textContent='☀'}})();
+function toggleTheme(){let b=document.body,n=document.getElementById('btnTheme');if(b.classList.contains('light')){b.classList.remove('light');n.textContent='🌙';localStorage.setItem('am4-theme','dark')}else{b.classList.add('light');n.textContent='☀';localStorage.setItem('am4-theme','light')}}
+// SSE
+let es=null;
+function csse(){if(es)es.close();es=new EventSource('/api/stream');es.onopen=()=>{document.getElementById('sseDot').className='sse-dot on'};es.onerror=()=>{document.getElementById('sseDot').className='sse-dot off'};
+es.onmessage=function(e){try{let d=JSON.parse(e.data);
+if(d.type==='init'){r=d.running;logStart=d.log_start||0;logTotal=d.log_total||0;if(d.account){let t=document.getElementById('acctTag');t.textContent=d.account.split('@')[0];t.title=d.account}if(d.log&&d.log.length>0)rll(d.log);if(d.maint)renderMaint(d.maint);ub(r,d.mode||'');uc(r);}
+else if(d.type==='account'){let t=document.getElementById('acctTag');t.textContent=(d.account||'').split('@')[0]||'--';t.title=d.account||'';refreshAll();lp();}
+else if(d.type==='start'){r=true;fa=true;logStart=0;logTotal=0;ub(true,d.mode);uc(true);let lc=document.getElementById('lc');if(lc.textContent.trim()==='等待首次运行…')lc.innerHTML='';document.getElementById('pw').classList.add('show');document.getElementById('fi').textContent='采集开始，保留现有数据并逐架更新…';}
+else if(d.type==='maint'){renderMaint(d.data);}
+else if(d.type==='market'){lmb(false);}
+else if(d.type==='hubs'){lh();}
+else if(d.type==='log'){all(d.line);} else if(d.type==='pending'){lp();}
+else if(d.type==='progress'){upb(d.current,d.total);document.getElementById('fi').textContent='已采集 '+d.current+' / '+d.total+' 架';}
+else if(d.type==='aircraft'){aar(d.data);ls2();upb(d.count,d.total);document.getElementById('fi').textContent='已采集 '+d.count+' / '+d.total+' 架';}
+else if(d.type==='fleet_remove'){let ids=new Set((d.data||[]).map(x=>String(x['飞机ID']||'')));fd=fd.filter(x=>!ids.has(String(x['飞机ID']||'')));fdc=fdc.filter(x=>!ids.has(String(x['飞机ID']||'')));rf2();ls2();}
+else if(d.type==='done'){r=false;ub(false,'');uc(false);document.getElementById('pw').classList.remove('show');document.getElementById('sf').textContent=d.fleet_count||'0';document.getElementById('lr').textContent=d.last_run||'--';ls2();lh();lm();lmb();if(d.refresh){lf()}document.getElementById('fi').textContent='共 '+d.fleet_count+' 架';if(d.error)all('❌ 错误: '+d.error);}
+}catch(_){}}}
+csse();window.addEventListener('focus',()=>{if(es&&es.readyState===EventSource.CLOSED)csse()});
+// 余额/价格更新由 SSE market 事件推送（采集脚本 __MARKET__ 行触发）；
+// 不再 60s 轮询，避免频繁访问 /api/market 加重后台抓取负担。
+
+function tog(id,btn){let w=document.getElementById(id);let hidden=w.style.display==='none';w.style.display=hidden?'':'none';btn.textContent=hidden?'▼ 收起':'▶ 展开'}
+function upb(c,t){if(!t)return;if(c>t)c=t;let w=document.getElementById('pw'),bar=document.getElementById('pb'),p=document.getElementById('pp');w.classList.add('show');let pct=Math.round((c/t)*100);if(pct>100)pct=100;bar.style.width=pct+'%';p.textContent=c+'/'+t+' ('+pct+'%)'}
+function afm(ac){let hub=document.getElementById('hf').value;let q=document.getElementById('si').value.trim().toLowerCase();if(hub&&(ac['枢纽分类']||'')!==hub)return false;if(!q)return true;return['注册号','航班号','机型','起飞机场代码','到达机场代码'].some(k=>String(ac[k]||'').toLowerCase().includes(q))}
+function aar(ac){let id=String(ac['飞机ID']||'');let paxAt=fd.findIndex(x=>String(x['飞机ID']||'')===id),cargoAt=fdc.findIndex(x=>String(x['飞机ID']||'')===id);let old=paxAt>=0?fd[paxAt]:(cargoAt>=0?fdc[cargoAt]:null);if(old&&!ac['_operation_state'])ac['_operation_state']=old['_operation_state'];let matched=afm(ac),isC=String(ac['客机组数量']||'0').trim()==='0';if(paxAt>=0){if(matched&&!isC)fd.splice(paxAt,1,ac);else fd.splice(paxAt,1)}if(cargoAt>=0){if(matched&&isC)fdc.splice(cargoAt,1,ac);else fdc.splice(cargoAt,1)}if(matched&&paxAt<0&&cargoAt<0)(isC?fdc:fd).push(ac);rf2();if(matched){let tr=document.querySelector('tr[data-id="'+eh(id)+'"]');if(tr){tr.classList.add('row-new');setTimeout(function(){tr.classList.remove('row-new')},5000)}}}
+function hubTip(r){let tip='';if(r['起飞机场名称']){let o=r['起飞机场名称']||'',d=r['到达机场名称']||'';tip+=d?o+' ~ '+d:o}if(r['航距km'])tip+=' | '+r['航距km']+'km';return tip?tip:'--'}
+function shortHub(h){let p=String(h).split(', ');return p.length>1?p[1]:String(h)}
+function aircraftState(r){let s=r['_operation_state']||'';if(s==='building')return['#f2c94c','建设中'];if(s==='maintenance')return['#eb5757','检修中'];if(s==='flying')return['#27ae60','飞行中'];return['#4da6ff','已落地']}
+function rowHTML(r){let hub=r['枢纽分类']||'';let ht=hubTip(r);let t=ht!=='--'?' title="'+eh(ht)+'"':'';let state=aircraftState(r);let pend=r['_pending_build']?' style="background:rgba(255,193,7,.12)"':'';
+return'<tr data-id="'+eh(r['飞机ID']||'')+'"'+pend+'><td><strong style="color:'+state[0]+'" title="'+state[1]+'">'+eh(r['注册号']||'')+'</strong>'+(r['_pending_build']?' <span class="badge" style="background:rgba(255,193,7,.25)">建设中</span>':'')+'</td><td'+t+'>'+eh(shortHub(hub))+'</td><td>'+eh(r['飞行时长']||'')+'</td><td>'+mst(r)+'</td><td>'+dmd(r)+'</td></tr>'}
+function mst(ac){let c=0,q=false;for(const k of ['CO2减排放','飞行速度增加','耗油量减少']){const v=ac[k]||'';if(v==='已改装')c++;if(v==='未查询')q=true}if(c===3)return'<span class="badge badge-green">全部</span>';if(c>0)return'<span class="badge badge-warn">部分</span>';if(q)return'<span class="badge badge-gray">未查询</span>';if(!ac['CO2减排放'])return'<span class="badge badge-gray">--</span>';return'<span class="badge badge-red">未改装</span>'}
+function dmd(r){let v=r['需求状态']||'';let bd='badge-gray',txt=v||'--';if(v==='不足'){bd='badge-red';txt='不足'}else if(v==='旺盛'){bd='badge-green';txt='旺盛'}let d=encodeURIComponent(JSON.stringify({e:r['经济舱需求'],b:r['商务舱需求'],f:r['头等舱需求'],se:r['经济舱座位'],sb:r['商务舱座位'],sf:r['头等舱座位'],cl:r['大货需求'],ch:r['重货需求'],scl:r['大货容量'],sch:r['重货容量']}));return'<span class="badge '+bd+' badge-demand" data-dm="'+d+'" role="button" tabindex="0">'+eh(txt)+'</span>'}
+function showDm(ev,el){let p=JSON.parse(decodeURIComponent(el.dataset.dm||'{}'));document.querySelectorAll('.dm-pop').forEach(x=>x.remove());let pop=document.createElement('div');pop.className='dm-pop';let lines=[];if(p.e||p.b||p.f){lines.push('<div class="row-line"><b>需求</b> 经济舱 '+p.e+' 商务舱 '+p.b+' 头等舱 '+p.f+'</div>')}if(p.se||p.sb||p.sf){lines.push('<div class="row-line"><b>布局</b> 经济舱 '+p.se+' 商务舱 '+p.sb+' 头等舱 '+p.sf+'</div>')}if(p.cl||p.ch){lines.push('<div class="row-line"><b>货物需求</b> 大货 '+p.cl+' / 重货 '+p.ch+'</div>')}if(p.scl||p.sch){lines.push('<div class="row-line"><b>货物容量</b> 大货 '+p.scl+' / 重货 '+p.sch+' Lbs</div>')}pop.innerHTML=lines.join('')||'暂无';document.body.appendChild(pop);pop.classList.add('show');let x=ev.clientX,y=ev.clientY,pad=12;let pw=pop.offsetWidth,vh=window.innerHeight,vw=window.innerWidth;let l=x+pad;if(l+pw>vw-8)l=Math.max(8,x-pw-pad);let t=y+pad;if(t+pop.offsetHeight>vh-8)t=Math.max(8,y-pop.offsetHeight-pad);pop.style.left=l+'px';pop.style.top=t+'px'}
+document.addEventListener('click',function(e){let b=e.target.closest('.badge-demand');if(b){showDm(e,b);return}document.querySelectorAll('.dm-pop').forEach(p=>p.remove())});
+
+function mbd(v){if(v==='已改装')return'<span class="badge badge-green">已改装</span>';if(v==='未改装')return'<span class="badge badge-red">未改装</span>';return'<span class="badge badge-gray">--</span>'}
+function ub(running,mode){let l=document.getElementById('btnRunLoop'),s=document.getElementById('btnStop'),b=document.getElementById('rb'),t=document.getElementById('mt');if(running){l.style.display='none';s.style.display='inline-flex';b.style.display='flex';t.textContent=mode==='light'?'轻量调试':mode==='once'?'全量调试':'循环模式'}else{l.style.display='inline-flex';s.style.display='none';b.style.display='none'}}
+function uc(running){let c=document.getElementById('runChip');if(!c)return;c.className='status-chip'+(running?' running':'');document.getElementById('runChipTxt').textContent=running?'运行中':'空闲'}
+function isProgLine(l){return l.includes('飞机详情')||l.includes('分组 type')||l.includes('改装 [')||l.includes('检修详情 [')}
+function isDataLine(l){return l.indexOf('__AIRCRAFT__')===0||l.indexOf('__MAINT__')===0}
+function foldLog(lines){
+  // 1) 过滤后端数据行（__AIRCRAFT__/__MAINT__ 长 JSON 不展示）
+  let fl=[];
+  for(let l of lines){if(!isDataLine(l))fl.push(l)}
+  // 2) 折叠连续进度行：同类别进度只保留最后一条
+  let out=[],prev=false;
+  for(let l of fl){let p=isProgLine(l);if(p&&prev){out[out.length-1]=l;continue}out.push(l);prev=p}
+  return out
+}
+function all(line){let d=document.getElementById('lc');let cls='dim';if(line.includes('完成'))cls='ok';else if(line.includes('⚠')||line.includes('失败')||line.includes('异常')||line.includes('手动停止'))cls='err';else if(line.includes('==='))cls='dim';
+  let isProg=isProgLine(line);
+  // 每行用块级 div，杜绝 span 之间缺换行导致的粘行
+  let html='<div class="'+(isProg?'lprog ':'')+cls+'">'+eh(line)+'</div>';
+  let last=Array.from(d.querySelectorAll('.lprog')).pop();
+  // 仅当用户接近底部时才自动滚动，避免上翻阅读历史时被强行拉回
+  let nearBottom=d.scrollTop+d.clientHeight>=d.scrollHeight-40;
+  // 进度行原地替换，避免折叠后多出空行
+  if(isProg&&last){last.outerHTML=html;if(nearBottom)d.scrollTop=d.scrollHeight;return;}
+  d.insertAdjacentHTML('beforeend',html);if(nearBottom)d.scrollTop=d.scrollHeight}
+function ensureLogFill(){let lc=document.getElementById('lc');if(!lc)return;if(!lgBusy&&logStart>0&&lc.scrollHeight<=lc.clientHeight+1){lgmo()}}
+function rll(lines){let d=document.getElementById('lc');
+  // 折叠连续进度行 + 过滤数据行
+  let out=foldLog(lines);
+  d.innerHTML=out.map(l=>{let c='';if(l.includes('完成'))c='ok';else if(l.includes('⚠')||l.includes('失败')||l.includes('异常')||l.includes('手动停止'))c='err';else if(l.includes('==='))c='dim';return'<div class="'+c+'">'+eh(l)+'</div>'}).join('');d.scrollTop=d.scrollHeight;setTimeout(ensureLogFill,0)}
+
+document.addEventListener('DOMContentLoaded',()=>{let lc=document.getElementById('lc');if(lc)lc.addEventListener('scroll',function(){if(this.scrollTop<30&&logStart>0&&!lgBusy)lgmo()});refreshAll()});
+function lgmo(){if(lgBusy||logStart<=0)return;lgBusy=true;let lc=document.getElementById('lc');
+  fetch('/api/log?offset='+logStart+'&limit=100').then(function(r){return r.json()}).then(function(d){if(!d||!d.lines||d.lines.length===0){lgBusy=false;return}
+    let prevH=lc.scrollHeight,prevST=lc.scrollTop;
+    // 上翻加载的历史也过滤数据行 + 折叠连续进度行
+    let out=foldLog(d.lines);
+    let html=out.map(function(l){let c='';if(l.includes('完成'))c='ok';else if(l.includes('⚠')||l.includes('失败')||l.includes('异常')||l.includes('手动停止'))c='err';else if(l.includes('==='))c='dim';return'<div class="'+c+'">'+eh(l)+'</div>'}).join('');
+    lc.innerHTML=html+lc.innerHTML;
+    logStart=d.start||0;
+    let addedH=lc.scrollHeight-prevH;
+    lc.scrollTop=prevST+addedH;
+    lgBusy=false;setTimeout(ensureLogFill,0)}).catch(function(){lgBusy=false})}
+// ===== 航线开辟规划器 =====
+let rpAcData = [], rpHubData = [], rpCands = [], rpArrId = '', rpMaxHours = 0, rpCandSeq = 0;
+
+function rpMatchAc(q) {
+  // 仅精确匹配（大小写不敏感）：用户从候选中选定完整机型名才有效
+  q = (q || '').trim();
+  if (!q) return null;
+  let low = q.toLowerCase();
+  let matches = rpAcData.filter(function (m) { return m.name.toLowerCase() === low; });
+  if (!matches.length) return null;
+  let eng = document.getElementById('rpEngine');
+  let eid = eng ? eng.value : '';
+  return matches.find(function (m) { return String(m.eid) === String(eid); }) || matches[0];
+}
+
+function rpSetEngines(name) {
+  let eng = document.getElementById('rpEngine');
+  if (!eng) return;
+  let low = (name || '').trim().toLowerCase();
+  let rows = rpAcData.filter(function (m) { return m.name.toLowerCase() === low; });
+  let old = eng.value;
+  if (!rows.length) { eng.innerHTML = '<option value="">请先选择机型</option>'; eng.disabled = true; return; }
+  eng.innerHTML = rows.map(function (m, i) {
+    return '<option value="' + eh(String(m.eid || '')) + '"' + (String(m.eid) === old || (!old && i === 0) ? ' selected' : '') + '>' +
+      eh((m.ename || ('发动机 ' + m.eid)) + ' · ' + m.speed + 'km/h · 油耗 ' + m.fuel) + '</option>';
+  }).join('');
+  eng.disabled = rows.length <= 1;
+}
+
+function rpAcFill(m) {
+  // 仅当用户从 datalist 候选中明确选定（精确匹配）时回填为规范机型名
+  if (m) document.getElementById('rpAc').value = m.name;
+}
+
+function rpInit() {
+  let rpInitTry = 0;
+  function rpLoadBase() {
+  Promise.all([api('/api/route/aircrafts'), api('/api/route/hubs')]).then(function (d) {
+    rpAcData = d[0] || [];
+    rpHubData = d[1] || [];
+    let ac = document.getElementById('rpAc'), dep = document.getElementById('rpDep'), dl = document.getElementById('rpAcList'), eng = document.getElementById('rpEngine');
+    if (ac && dl) {
+      let uniqueModels = rpAcData.filter(function (m, i, all) { return all.findIndex(function (x) { return x.name === m.name; }) === i; });
+      dl.innerHTML = uniqueModels.map(function (m) {
+        var capLabel = String(m.type) === '1' ? (m.capacity + ' Lbs 货') : (m.capacity + '座');
+        return '<option value="' + eh(m.name) + '">' + eh(m.name + '，' + capLabel + '，航程' + m.range + 'km') + '</option>';
+      }).join('');
+      ac.addEventListener('change', function () {
+        rpAcFill(rpMatchAc(ac.value));
+        rpSetEngines(ac.value);
+        rpLoadCands();
+      });
+    }
+    if (eng) eng.addEventListener('change', rpLoadCands);
+    if (dep) {
+      dep.innerHTML = '<option value="">选择出发枢纽</option>' + rpHubData.map(function (h) {
+        return '<option value="' + eh(h.name) + '" data-hub="' + eh(h.hub_id) + '" data-ap="' + eh(h.airport_id || '') + '">' + eh(h.name) + '</option>';
+      }).join('');
+      dep.addEventListener('change', rpLoadCands);
+    }
+    // 机型默认留空：刷新后必须主动选择，避免静默回到默认机型导致误下单
+    if (ac) ac.value = '';
+  }).catch(function (e) {
+    console.error(e);
+    if (rpInitTry < 1) {
+      rpInitTry++;
+      setTimeout(rpLoadBase, 2000);  // 账号切换/首次登录可能较慢，重试一次
+      return;
+    }
+    let dep = document.getElementById('rpDep');
+    if (dep) dep.innerHTML = '<option value="">基地加载失败，请刷新页面</option>';
+  });
+  }
+  rpLoadBase();
+  let tpd = document.getElementById('rpTpd');
+  if (tpd) tpd.addEventListener('change', rpLoadCands);
+  let maximise = document.getElementById('rpMaximise');
+  if (maximise) maximise.addEventListener('change', function(){if(tpd)tpd.disabled=this.checked;rpLoadCands()});
+  rpMaxH();
+}
+
+function rpIsMax(){let el=document.getElementById('rpMaximise');return !!(el&&el.checked)}
+function rpMaxH() {
+  let tpd = parseInt(document.getElementById('rpTpd').value || '6', 10) || 6;
+  let el = document.getElementById('rpMaxH');
+  if (el) el.textContent = rpIsMax()?'每条航线自动寻找可满载的最高班次（最多 20 班/日）':('单程 ≤ ' + (24 / tpd).toFixed(2) + ' 小时');
+}
+
+function rpFmtHM(h) {
+  // 小时 -> HH:MM:SS（与 AM4Help 展示一致）
+  if (h == null || isNaN(h)) return '--:--:--';
+  let s = Math.max(0, Math.round(h * 3600));
+  let hh = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60;
+  function p2(n) { return (n < 10 ? '0' : '') + n; }
+  return p2(hh) + ':' + p2(mm) + ':' + p2(ss);
+}
+
+function rpCurAc() {
+  return rpMatchAc(document.getElementById('rpAc').value);
+}
+
+function rpCurDep() {
+  let dep = document.getElementById('rpDep');
+  if (!dep || !dep.selectedOptions[0]) return null;
+  let opt = dep.selectedOptions[0];
+  let ap = opt.getAttribute('data-ap');
+  return ap ? { name: opt.value, hub_id: opt.getAttribute('data-hub'), airport_id: ap } : null;
+}
+
+function rpLoadCands(keepResult) {
+  let requestSeq = ++rpCandSeq;
+  rpMaxH();
+  let acm = rpCurAc(), dep = rpCurDep();
+  let wrap = document.getElementById('rpCandWrap');
+  let tbody = document.getElementById('rpCandList');
+  let info = document.getElementById('rpCandInfo');
+  let tpd = parseInt(document.getElementById('rpTpd').value || '6', 10) || 6;
+  let maximise = rpIsMax();
+  if (!acm) { if (info) info.textContent = '请先选定完整机型'; if (wrap) wrap.style.display = 'none'; return; }
+  if (!dep) { if (info) info.textContent = '请先选择出发枢纽'; if (wrap) wrap.style.display = 'none'; return; }
+  if (wrap) wrap.style.display = 'block';
+  if (tbody) tbody.innerHTML = '<tr><td colspan="9"><span class="spinner"></span> 正在计算候选航线…</td></tr>';
+  if (info) info.textContent = '';
+  rpArrId = '';
+  let res = document.getElementById('rpResult');
+  if (res && !keepResult) res.style.display = 'none';
+  fetch('/api/route/candidates?ac=' + encodeURIComponent(acm.name) + '&engine=' + encodeURIComponent(acm.eid || '') + '&tpd=' + tpd + '&maximize=' + (maximise?'1':'0') + '&dep=' + dep.airport_id)
+    .then(function (r) { return r.json(); }).then(function (d) {
+      if (requestSeq !== rpCandSeq) return;
+      if (!d.ok) { if (tbody) tbody.innerHTML = '<tr><td colspan="9" class="err">⚠ ' + eh(d.error || '筛选失败') + '</td></tr>'; return; }
+      rpCands = d.candidates || [];
+      rpMaxHours = d.max_hours || 0;
+      if (info) info.textContent = '共 ' + rpCands.length + ' 条候选（' + (d.maximize?'已为每条航线取最高可满载班次':('单程 ≤ ' + d.max_hours + ' 小时')) + '，按每日净利排序）';
+      rpRenderCands();
+    }).catch(function (e) { if (requestSeq === rpCandSeq && tbody) tbody.innerHTML = '<tr><td colspan="9" class="err">⚠ ' + eh(e.message || '请求失败') + '</td></tr>'; });
+}
+
+function rpRenderCands() {
+  let tbody = document.getElementById('rpCandList');
+  let wrap = document.getElementById('rpCandWrap');
+  if (!tbody) return;
+  if (!rpCands.length) { tbody.innerHTML = '<tr><td colspan="9" class="empty"><div class="icon">📭</div>没有符合时长、航程与需求的候选航线</td></tr>'; return; }
+  if (wrap) wrap.style.display = 'block';
+  let cargo = String((rpCurAc() || {}).type) === '1';
+  let dh = document.getElementById('rpDemandHead'), ch = document.getElementById('rpConfigHead');
+  if (dh) dh.textContent = cargo ? '需求 L/H' : '需求 Y/J/F';
+  if (ch) ch.textContent = cargo ? '货舱 L/H' : '舱位 Y/J/F';
+  tbody.innerHTML = rpCands.map(function (c) {
+    let dem = c.demand || {}, cfg = c.config || {};
+    let demandText = cargo ? (Math.round((dem.economy || 0) / 2) * 1000).toLocaleString() + '/' + ((dem.business || 0) * 1000).toLocaleString() : (dem.economy || 0).toLocaleString() + '/' + (dem.business || 0).toLocaleString() + '/' + (dem.first || 0).toLocaleString();
+    let configText = cargo ? ('L' + (cfg.l || 0) + '%/H' + (cfg.h || 0) + '%') : ((cfg.economy || 0) + '/' + (cfg.business || 0) + '/' + (cfg.first || 0));
+    let sel = rpArrId === c.id ? ' style="background:rgba(77,166,255,.18)"' : '';
+    return '<tr data-id="' + eh(c.id) + '" style="cursor:pointer"' + sel + ' onclick="rpPickCand(\'' + eh(c.id) + '\')">' +
+      '<td><b>' + eh(c.iata || '') + '</b> ' + eh(c.name) + '</td>' +
+      '<td>' + c.distance_km.toLocaleString() + 'km</td>' +
+      '<td>' + rpFmtHM(c.flight_hours) + '</td>' +
+      '<td><b>' + (c.tpd || 0) + '</b></td>' +
+      '<td>' + demandText + '</td>' +
+      '<td>' + configText + '</td>' +
+      '<td>$' + (c.revenue_per_day || 0).toLocaleString() + '</td>' +
+      '<td><b style="color:var(--ac2)">$' + (c.net_per_day != null ? c.net_per_day.toLocaleString() : '—') + '</b></td>' +
+      '<td>' + (c.payback_days != null ? c.payback_days.toLocaleString() + '天' : '—') + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+function rpPickCand(id) {
+  rpArrId = id;
+  let c = rpCands.find(function (x) { return x.id === id; });
+  document.querySelectorAll('#rpCandList tr[data-id]').forEach(function (el) {
+    el.style.background = el.getAttribute('data-id') === id ? 'rgba(77,166,255,.18)' : '';
+  });
+  if (!c) return;
+  let wrap = document.getElementById('rpCandWrap');
+  if (wrap) wrap.style.display = 'none';
+  let info = document.getElementById('rpCandInfo');
+  if (info) info.innerHTML = '已选 ' + eh(c.name) + ' (' + eh(c.iata || '') + ') · <a href="javascript:void(0)" onclick="rpShowCands()" style="color:var(--ac2)">↑ 查看候选</a>';
+  let box = document.getElementById('rpResult');
+  box.style.display = 'block';
+  let dem = c.demand || {}, cfg = c.config || {}, pr = c.prices || {};
+  let cargo = String((rpCurAc() || {}).type) === '1';
+  let rows = '<div class="row-line" style="margin-bottom:10px"><b>✈ 已选到达机场：' + eh(c.name) + ' (' + eh(c.iata || '') + ')</b> · ' + c.distance_km.toLocaleString() + 'km · ' + rpFmtHM(c.flight_hours) + ' · 每日 ' + (c.tpd || 0) + ' 班' + (c.stopover ? ' · 经停 ' + eh(c.stopover.iata) : '') + '</div>';
+  rows += '<div class="row-line" style="margin-top:6px"><span class="mk-label">需求</span> ' + (cargo ? ('L ' + (Math.round((dem.economy || 0) / 2) * 1000).toLocaleString() + ' Lbs / H ' + ((dem.business || 0) * 1000).toLocaleString() + ' Lbs') : ('Y ' + (dem.economy || 0).toLocaleString() + ' / J ' + (dem.business || 0).toLocaleString() + ' / F ' + (dem.first || 0).toLocaleString())) + '</div>';
+  rows += '<div class="row-line" style="margin-top:6px"><span class="mk-label">票价</span> ' + (cargo ? ('L $' + ((pr.economy || 0) / 1000).toFixed(2) + ' / H $' + ((pr.business || 0) / 1000).toFixed(2)) : ('Y $' + (pr.economy || 0).toLocaleString() + ' / J $' + (pr.business || 0).toLocaleString() + ' / F $' + (pr.first || 0).toLocaleString())) + '</div>';
+  rows += '<div class="row-line" style="margin-top:6px"><span class="mk-label">舱位</span> ' + (cargo ? ('货舱 L' + cfg.l + '% / H' + cfg.h + '%') : ('Y ' + (cfg.economy || 0) + ' / J ' + (cfg.business || 0) + ' / F ' + (cfg.first || 0))) + '</div>';
+  rows += '<div class="row-line" style="margin-top:6px"><span class="mk-label">每日收益</span> $' + (c.revenue_per_day || 0).toLocaleString() + ' <span class="msec-sub">燃油 $' + (c.fuel_cost_per_day || 0).toLocaleString() + ' · CO₂ $' + (c.co2_cost_per_day || 0).toLocaleString() + '</span></div>';
+  rows += '<div class="row-line" style="margin-top:6px"><span class="mk-label">净利/日</span> <b style="color:var(--ac2)">$' + (c.net_per_day != null ? c.net_per_day.toLocaleString() : '不可行') + '</b> · 单趟 $' + (c.net_per_trip || 0).toLocaleString() + '</div>';
+  rows += '<div class="row-line" style="margin-top:6px"><span class="mk-label">成本</span> 检修 $' + (c.acheck_cost_per_day || 0).toLocaleString() + '/日 · 维修 $' + (c.repair_cost_per_day || 0).toLocaleString() + '/日 · 购机 $' + (c.aircraft_cost || 0).toLocaleString() + ' · 建线 $' + (c.creation_cost || 0).toLocaleString() + '</div>';
+  rows += '<div class="row-line" style="margin-top:6px"><span class="mk-label">投资判断</span> 总投入 <b>$' + (c.initial_investment || 0).toLocaleString() + '</b> · 回本 <b>' + (c.payback_days != null ? c.payback_days + ' 天' : '不可回本') + '</b> · 30日 ROI <b>' + (c.roi_30d_pct != null ? c.roi_30d_pct + '%' : '—') + '</b></div>';
+  let affordable = playerSpendable == null || (c.initial_investment || 0) <= playerSpendable;
+  if (!affordable) rows += '<div class="row-line err" style="margin-top:8px">⚠ 资金不足：保留 $' + playerCashReserve.toLocaleString() + ' 运营现金后，可用于建设 $' + playerSpendable.toLocaleString() + '</div>';
+  rows += '<div class="row-line" style="margin-top:12px"><label class="mk-label">飞机注册号</label> <input class="search-box" id="rpReg" placeholder="如 MC-21-4-NEW" style="max-width:220px"></div>';
+  rows += '<div class="row-line" style="margin-top:8px"><label class="mk-label" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="rpRetrofit" checked style="width:auto"> 建线后改装（CO₂/提速/省油）</label></div>';
+  rows += '<div style="margin-top:10px"><button class="btn ' + (affordable ? 'btn-success' : 'btn-danger') + '" onclick="rpBuild()"' + (affordable ? '' : ' disabled title="资金不足"') + '>' + (affordable ? '🏗 建设' : '⚠ 资金不足') + '</button></div>';
+  box.innerHTML = rows;
+}
+
+function rpShowCands() {
+  let wrap = document.getElementById('rpCandWrap');
+  if (wrap && rpCands.length) wrap.style.display = 'block';
+  let info = document.getElementById('rpCandInfo');
+  if (info && rpCands.length) info.textContent = '共 ' + rpCands.length + ' 条候选（' + (rpIsMax()?'已取最高可满载班次':('单程 ≤ ' + (rpMaxHours || '') + ' 小时')) + '，按每日净利排序）';
+}
+function rpBuild() {
+  let acm = rpCurAc(), dep = rpCurDep();
+  let reg = document.getElementById('rpReg') ? document.getElementById('rpReg').value.trim() : '';
+  if (!acm) { alert('请从下拉候选中选择完整机型（如 MC-21-400）'); return; }
+  if (!dep) { alert('请选择出发枢纽'); return; }
+  if (!rpArrId) { alert('请先在候选航线中点选到达机场'); return; }
+  if (!reg) { alert('请先填写飞机注册号'); return; }
+  if (!/^[A-Za-z0-9\-_.]{1,14}$/.test(reg)) { alert('注册号仅允许字母/数字/-/_/.（≤14 字符），且不能含引号等特殊字符'); return; }
+  let c2 = rpCands.find(function (x) { return x.id === rpArrId; });
+  let tpd = rpIsMax()&&c2?parseInt(c2.tpd,10):(parseInt(document.getElementById('rpTpd').value || '6', 10) || 6);
+  let depName = c2 ? (c2.name + ' (' + (c2.iata || '') + ')') : rpArrId;
+  let invest = c2 ? (c2.initial_investment || 0) : 0, payback = c2 && c2.payback_days != null ? c2.payback_days + ' 天' : '未知';
+  if (!confirm('确认执行？将真实下单购买 ' + acm.name + '（' + (acm.ename || acm.eid) + '）并建立 ' + (dep ? dep.name : '') + ' → ' + depName + ' 的航线（' + reg + '，每日 ' + tpd + ' 班）。\n预计总投入 $' + invest.toLocaleString() + '，回本约 ' + payback + '。')) return;
+  let box = document.getElementById('rpResult');
+  box.style.display = 'block';
+  box.innerHTML = '<span class="spinner"></span> 建设中…';
+  let c = rpCands.find(function (x) { return x.id === rpArrId; });
+  let cfg = (c && c.config) || {};
+  fetch('/api/route/build', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
+    body: JSON.stringify({
+      ac: acm.name, dep_hub_id: dep.hub_id, dep_airport_id: dep.airport_id,
+      arr_airport_id: rpArrId, reg: reg, tpd: tpd,
+      engine: acm.eid, economy: cfg.economy, business: cfg.business, first: cfg.first,
+      cargo_l: cfg.l, cargo_h: cfg.h,
+      retrofit: (function () { var rf = document.getElementById('rpRetrofit'); return rf ? (rf.checked ? 'all' : null) : 'all'; })()
+    })
+  }).then(function (r) {
+    if (r.status === 403) {
+      box.innerHTML = '<span class="err">⚠ 页面令牌已过期，正在刷新…</span>';
+      setTimeout(function () { location.reload(); }, 1000);
+      return null;
+    }
+    return r.json().catch(function () {
+      throw new Error('服务返回异常 (HTTP ' + r.status + ')，请刷新页面重试');
+    });
+  }).then(function (d) {
+    if (d === null) return;
+    let html = '';
+    if (d.error) html = '<div class="err">⚠ ' + eh(d.error) + '</div>';
+    (d.steps || []).forEach(function (s) { html += '<div class="row-line">' + (s.ok ? '✅' : '❌') + ' ' + eh(s.step) + ': ' + eh(s.msg) + '</div>'; });
+    box.innerHTML = html || '<span class="err">无返回结果</span>';
+    if (d.ok) rpLoadCands(true);  // 建设成功：立即刷新候选，已建航线消失（保留结果面板）
+  }).catch(function (e) { box.innerHTML = '<span class="err">⚠ ' + eh(e.message || '请求失败') + '</span>'; });
+}
+
+document.addEventListener('DOMContentLoaded', rpInit);
+let pTasks = [];
+function fmtDur2(sec) {
+  sec = Math.max(0, sec | 0);
+  let h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), ss = sec % 60;
+  function p2(n) { return (n < 10 ? '0' : '') + n; }
+  return (h > 0 ? h + '小时 ' : '') + p2(m) + '分 ' + p2(ss) + '秒后';
+}
+async function lp() {
+  try {
+    let d = await api('/api/pending');
+    pTasks = d || [];
+    let pc = document.getElementById('pc');
+    if (pc) pc.textContent = '(' + pTasks.length + ' 条)';
+    let tb = document.getElementById('ptb');
+    if (!tb) return;
+    if (!pTasks.length) { tb.innerHTML = '<tr><td colspan="4" class="empty"><div class="icon">⏳</div>暂无待定任务</td></tr>'; return; }
+    tb.innerHTML = pTasks.map(function (t) {
+      let when = t.trigger_at ? new Date(t.trigger_at * 1000).toLocaleString('zh-CN') : '--';
+      let remain = '';
+      if (t.status === 'pending' && t.trigger_at) {
+        remain = '<br><span class="dim rem-cell" data-trigger="' + t.trigger_at + '">' + fmtDur2(t.remaining) + '</span>';
+      } else if (t.remaining != null) {
+        remain = '<br><span class="dim">' + fmtDur2(t.remaining) + '</span>';
+      }
+      let badge = t.status === 'pending' ? '<span class="badge" style="background:rgba(77,166,255,.2);color:var(--ac2)">等待中</span>'
+        : t.status === 'running' ? '<span class="badge" style="background:rgba(255,193,7,.25)">执行中</span>'
+        : t.status === 'done' ? '<span class="badge" style="background:rgba(40,167,69,.25)">已完成</span>'
+        : t.status === 'failed' ? '<span class="badge" style="background:rgba(220,53,69,.25)">失败</span>'
+        : '<span class="badge">已取消</span>';
+      let err = t.error ? '<div class="dim" style="font-size:.7rem">' + eh(t.error) + '</div>' : '';
+      let act = t.status === 'pending' ? '<button class="btn btn-outline btn-sm" onclick="pcCancel(\'' + eh(t.id) + '\')">取消</button>' : '';
+      let notReady = t.status === 'pending' && t.route_required && !t.route_ready;
+      let rowStyle = notReady ? ' style="background:rgba(255,193,7,.12)"' : '';
+      return '<tr' + rowStyle + '><td><b>' + (notReady ? '★ ' : '') + eh(t.title) + '</b>' + (notReady ? ' <span class="dim" style="font-size:.7rem">航线未建</span>' : '') + err + '</td><td>' + when + remain + '</td><td>' + badge + '</td><td>' + act + '</td></tr>';
+    }).join('');
+  } catch (e) { console.error(e); }
+}
+async function pcCancel(id) {
+  try {
+    let r = await fetch('/api/pending/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: { 'X-CSRF-Token': CSRF } });
+    if (r.status === 403) { location.reload(); return; }
+    lp();
+  } catch (e) { console.error(e); }
+}
+document.addEventListener('DOMContentLoaded', function () { lp(); setInterval(tickPending, 1000); });
+function tickPending() {
+  let now = Date.now() / 1000;
+  document.querySelectorAll('#ptb .rem-cell[data-trigger]').forEach(function (el) {
+    let trig = parseFloat(el.getAttribute('data-trigger'));
+    let rem = Math.max(0, Math.round(trig - now));
+    el.textContent = rem > 0 ? fmtDur2(rem) : '即将执行…';
+  });
+}
+
+
+
+function st(t){document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(x=>x.style.display='none');document.querySelector('.tab[data-tab="'+t+'"]').classList.add('active');document.getElementById('tab'+t.charAt(0).toUpperCase()+t.slice(1)).style.display='block';if(t==='pending')lp();if(t==='log'){let lc=document.getElementById('lc');requestAnimationFrame(()=>{lc.scrollTop=lc.scrollHeight})}}
+async function api(url,opts){let r=opts?await fetch(url,opts):await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+async function refreshAll(){await atg();await lmb();await ls2();await lh();await lf();await lm()}
+async function atg(){try{let s=await api('/api/status');let a=s.account||'';let t=document.getElementById('acctTag');t.textContent=a?(a.split('@')[0]):'--';t.title=a||'';document.getElementById('lr').textContent=s.last_run||'--'}catch(e){}}
+function fmtM(v){let n=parseFloat(String(v).replace(/,/g,''));if(isNaN(n))return v;let neg=n<0?'-':'';let a=Math.abs(n);if(a>=100000){return neg+(a/1000000).toFixed(1).replace(/\.0$/,'')+'M'}return v}
+function isMobile(){return window.matchMedia('(max-width:768px)').matches}
+let mToastT=null;
+function mToast(msg){let el=document.getElementById('mToast');if(!el){el=document.createElement('div');el.id='mToast';el.style.cssText='position:fixed;top:16px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--brd);border-radius:10px;padding:8px 18px;font-size:.85rem;color:var(--t2);box-shadow:0 4px 20px rgba(0,0,0,.35);z-index:99999;transition:opacity .3s';document.body.appendChild(el)}el.textContent=msg;el.style.opacity='1';clearTimeout(mToastT);mToastT=setTimeout(function(){el.style.opacity='0'},2500)}
+async function lmb(showToast){try{let t0=Date.now();let d=await api('/api/market',{cache:'no-store'});playerSpendable=d.spendable_balance;playerCashReserve=d.cash_reserve||0;document.getElementById('mkFuel').textContent=d.fuel_price||'--';let mb=isMobile();document.getElementById('mkFuelQty').textContent=mb?fmtM(d.fuel_qty):(d.fuel_qty||'--');document.getElementById('mkCo2').textContent=d.co2_price||'--';document.getElementById('mkCo2Qty').textContent=mb?fmtM(d.co2_qty):(d.co2_qty||'--');document.getElementById('mkTime').textContent=d.updated_at||'--';document.getElementById('mkSpin').style.display=d.refreshing?'inline-block':'none';document.getElementById('sb').textContent=mb?fmtM(d.balance):(d.balance||'--');if(d.refreshing&&showToast)mToast('正在刷新账户资产…')}catch(e){console.error(e)}}
+async function ls2(){try{let d=await api('/api/fleet/stats');let live=fd.length+fdc.length;hs=d.hubs||{};document.getElementById('sf').textContent=((d.total||0)>0?d.total:live)||'0';document.getElementById('sh').textContent=allHubs.length||Object.keys(hs).length||'0';rhc()}catch(e){console.error(e)}}
+function rhc(){let c=document.getElementById('hubChips');let counts=hs;if(!counts||Object.keys(counts).length===0){counts={};for(const r of fd.concat(fdc)){let h=r['枢纽分类']||'其他';counts[h]=(counts[h]||0)+1}}let hubs=allHubs.length?allHubs:Object.keys(counts).sort((a,b)=>(counts[b]||0)-(counts[a]||0));c.replaceChildren();for(const h of hubs){let chip=document.createElement('span');chip.className='hub-chip'+(shc===h?' active':'');chip.append(document.createTextNode(shortHub(h)));let count=document.createElement('span');count.className='count';count.textContent=counts[h]||0;chip.append(count);chip.addEventListener('click',()=>shc2(h));c.append(chip)}}
+function shc2(h){shc=(shc===h)?'':h;document.getElementById('hf').value=shc;rhc();lf()}
+function oh(){shc=document.getElementById('hf').value;rhc();lf()}
+async function lh(){try{let hubs=await api('/api/hubs');allHubs=hubs;document.getElementById('sh').textContent=hubs.length||'0';let sel=document.getElementById('hf'),cur=sel.value;sel.replaceChildren();let all=document.createElement('option');all.value='';all.textContent='🏢 全部枢纽';sel.append(all);hubs.forEach(h=>{let opt=document.createElement('option');opt.value=h;opt.textContent=h;sel.append(opt)});sel.value=cur;rhc()}catch(e){console.error(e)}}
+async function lf(){let hub=document.getElementById('hf').value,search=document.getElementById('si').value.trim();let bp=new URLSearchParams({sort:cs,dir:cd,cli:'pax',...(hub&&{hub}),...(search&&{search})});let bc=new URLSearchParams({cli:'cargo',...(hub&&{hub}),...(search&&{search})});try{let [a,c]=await Promise.all([api('/api/fleet?'+bp),api('/api/fleet?'+bc)]);fd=a;fdc=c;rf2()}catch(e){console.error(e)}}
+function rf2(){let tb=document.getElementById('fb'),tc=document.getElementById('fbc');if(fd.length===0){tb.innerHTML='<tr><td colspan="5" class="empty"><div class="icon">📭</div>没有匹配的客机数据</td></tr>'}else{tb.innerHTML=fd.map(r=>rowHTML(r)).join('')}if(fdc.length===0){tc.innerHTML='<tr><td colspan="5" class="empty"><div class="icon">📭</div>没有匹配的货机数据</td></tr>'}else{tc.innerHTML=fdc.map(r=>rowHTML(r)).join('')}document.getElementById('fiPax').textContent='('+fd.length+' 架)';document.getElementById('fiCargo').textContent='('+fdc.length+' 架)';document.getElementById('fi').textContent='客机 '+fd.length+' / 货机 '+fdc.length+' 架'}
+function sf(f){if(cs===f)cd=cd==='asc'?'desc':'asc';else{cs=f;cd='asc'}document.querySelectorAll('#ft th .sort-arrow').forEach(s=>s.textContent='');let th=document.querySelector('#ft th[data-sort="'+f+'"] .sort-arrow');if(th)th.textContent=cd==='asc'?'▲':'▼';lf()}
+function ds(){clearTimeout(_to);_to=setTimeout(lf,300)}
+function rf(){document.getElementById('si').value='';document.getElementById('hf').value='';shc='';rhc();lf()}
+async function lm(){try{md=await api('/api/maintenance');rm()}catch(e){console.error(e)}}
+function rm(){
+  if(md&&typeof md==='object'&&!Array.isArray(md)&&md['warnings']!==undefined){renderMaint(md);return}
+  // 兼容旧结构 / 直接数组：包装成 {warnings}
+  renderMaint({warnings:(md&&md['warnings']?md['warnings']:(Array.isArray(md)?md:[]))})
+}
+function mtRow(r){let s=r['status']||'';let v=r['注册号']||'';let badge=s.indexOf('需A-Check')>=0?'<span class="badge maint-badge maint-h">需A-Check</span>':s.indexOf('高损坏')>=0?'<span class="badge maint-badge maint-w">高损坏</span>':'';return'<tr><td><strong>'+eh(v)+'</strong></td><td>'+eh(r['距A-Check小时']||'--')+'h</td><td>'+eh(r['损坏率%']||'--')+'%</td><td>'+(badge||'<span class="maint-sub">正常</span>')+'</td></tr>'}
+function renderMaint(d){
+  let w=d['warnings']||[];let mo=document.getElementById('moNeed')
+  mo.innerHTML=w.length?w.map(r=>mtRow(r)).join(''):'<tr><td colspan="4" class="empty"><div class="icon">🛡️</div>暂无检修预警，全部飞机状态良好</td></tr>'
+  document.getElementById('mnCount').textContent='('+w.length+' 架需检修)'
+  document.getElementById('mi').textContent='共 '+w.length+' 架需检修 · 更新 '+(d['updated_at']||'--')
+}
+async function run(mode){try{let r=await api('/api/run',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},body:JSON.stringify({mode})});if(!r.ok)alert(r.msg);else document.getElementById('lr').textContent=new Date().toLocaleString('zh-CN')}catch(e){alert('请求失败: '+e.message)}}
+async function stop(){try{let r=await api('/api/stop',{method:'POST',headers:{'X-CSRF-Token':CSRF}});if(!r.ok)alert(r.msg)}catch(e){alert('请求失败: '+e.message)}}
+function eh(s){let d=document.createElement('div');d.textContent=s||'';return d.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+</script></body></html>
