@@ -336,6 +336,58 @@ class FleetReconciliationTests(unittest.TestCase):
         self.assertEqual(removed, [])
         self.assertEqual(set(existing), {"1", "2"})
 
+    def test_build_placeholder_is_never_mistaken_for_sold_aircraft(self):
+        existing = {
+            "1": {"飞机ID": "1", "注册号": "KEEP"},
+            "B-NEW-1": {
+                "飞机ID": "B-NEW-1", "注册号": "NEW-1", "建设状态": "建设中",
+            },
+        }
+        removed = collector._reconcile_removed_aircraft(existing, {"1"}, 1)
+        self.assertEqual(removed, [])
+        self.assertIn("B-NEW-1", existing)
+
+    def test_light_refresh_upgrades_build_placeholder_to_real_aircraft_id(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fleet = Path(temp_dir) / "fleet.csv"
+            placeholder = {
+                "飞机ID": "B-MC-21-4-90", "注册号": "MC-21-4-90",
+                "建设状态": "建设中", "枢纽分类": "Singapore",
+                "起飞机场名称": "Singapore", "到达机场名称": "Ningbo",
+            }
+            with fleet.open("w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=collector.CSV_FIELDNAMES,
+                                        extrasaction="ignore")
+                writer.writeheader()
+                writer.writerow(placeholder)
+            fresh = {"飞机ID": "90", "注册号": "MC-21-4-90",
+                     "枢纽分类": "其他", "飞行时长": "00:00:00"}
+            with patch.object(collector, "FLEET_CSV", fleet):
+                collector._write_light_fleet_snapshot(
+                    {"B-MC-21-4-90": placeholder}, [fresh], [], {}, [])
+                rows = collector.load_existing_csv(fleet)
+        self.assertEqual(set(rows), {"90"})
+        self.assertEqual(rows["90"]["建设状态"], "建设中")
+        self.assertEqual(rows["90"]["枢纽分类"], "Singapore")
+        self.assertEqual(rows["90"]["到达机场名称"], "Ningbo")
+
+    def test_full_snapshot_collapses_placeholder_after_real_id_appears(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fleet = Path(temp_dir) / "fleet.csv"
+            fields = ["飞机ID", "注册号", "建设状态", "枢纽分类", "最后更新时间"]
+            with fleet.open("w", newline="", encoding="utf-8-sig") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                writer.writerow({"飞机ID": "B-NEW-1", "注册号": "NEW-1",
+                                 "建设状态": "建设中", "枢纽分类": "Singapore"})
+            real = {"飞机ID": "90", "注册号": "NEW-1",
+                    "建设状态": "建设中", "枢纽分类": "Singapore"}
+            with patch.object(collector, "FLEET_CSV", fleet), \
+                 patch.object(collector, "CSV_FIELDNAMES", fields):
+                collector._write_full_fleet_snapshot([real])
+                rows = collector.load_existing_csv(fleet)
+        self.assertEqual(set(rows), {"90"})
+
     def test_home_status_supports_airborne_takeover(self):
         page = """
         statusData[15599652] = {

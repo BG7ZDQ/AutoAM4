@@ -1075,7 +1075,7 @@ def build_route(aircraft: dict, origin_hub_id: str, dest_airport_id: str,
         minutes = max(1, round(remain_sec / 60))
         steps.append({
             "step": "deliver", "ok": True,
-            "msg": f"{reg} 正在交付，剩余 {minutes} 分钟；\n飞机交付后将会自动建设航线",
+            "msg": f"{reg} 正在交付，剩余 {minutes} 分钟；\n交付后将会自动建设航线",
         })
         return {"ok": True, "steps": steps, "waiting_delivery": True,
                 "fid": fid, "remain_sec": remain_sec}

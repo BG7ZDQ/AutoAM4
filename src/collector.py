@@ -704,6 +704,13 @@ def _reconcile_removed_aircraft(existing: dict, live_ids: set[str], expected_tot
         return []
     removed = []
     for aircraft_id in sorted(set(existing) - live_ids):
+        row = existing.get(aircraft_id) or {}
+        # B-注册号 是购机流程在取得官网飞机 ID 前写入的本地占位键，并不属于
+        # 官网机队清单。建设中的真实行也可能短暂处于交付/改装页面，二者都不能
+        # 被“完整清单”反向证明为已经售出。
+        if (str(aircraft_id).startswith("B-")
+                or str(row.get("建设状态", "")).strip()):
+            continue
         row = existing.pop(aircraft_id, None)
         if row:
             removed.append(row)
@@ -867,17 +874,25 @@ def _write_fleet_snapshot(existing: dict[str, dict], hubs: list[dict],
         rows = load_existing_csv(FLEET_CSV) or dict(existing)
         for r in (extra or []):
             aircraft_id = r["飞机ID"]
-            current = rows.get(aircraft_id)
-            if current is None and r.get("注册号"):
-                current = next((item for item in rows.values()
-                                if str(item.get("注册号", "")).strip().upper()
-                                == str(r.get("注册号", "")).strip().upper()), None)
+            current_key = aircraft_id if aircraft_id in rows else None
+            if current_key is None and r.get("注册号"):
+                current_key = next((key for key, item in rows.items()
+                                    if str(item.get("注册号", "")).strip().upper()
+                                    == str(r.get("注册号", "")).strip().upper()), None)
+            current = rows.get(current_key) if current_key is not None else None
             if current and str(current.get("建设状态", "")).strip():
                 # 新购飞机在建线/改装期间，详情页常暂时显示“其他 / 00:00:00”。
                 # 保留建设记录已经写入的航线字段，只接收不会破坏建设上下文的状态。
                 for key in ("注册号", "距A-Check小时", "损坏率%"):
                     if str(r.get(key, "")).strip():
                         current[key] = r[key]
+                # 官网首次列出新购飞机后，把 B-注册号 占位键原地升级为真实 ID；
+                # 不能另建一行，否则本轮末尾会把占位行误判为已售出。
+                if (current_key != aircraft_id
+                        and str(current.get("飞机ID", "")).startswith("B-")):
+                    rows.pop(current_key, None)
+                    current["飞机ID"] = aircraft_id
+                    rows[aircraft_id] = current
                 continue
             # 全量轮次的 now_ts 固定在轮次开始；若服务端待办稍后刷新了同一架飞机，
             # 保留时间戳更晚的单机详情，避免后续增量快照把它覆盖回旧需求。
@@ -900,6 +915,20 @@ def _row_updated_at(row: dict) -> str:
     return value if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", value) else ""
 
 
+def _collapse_build_placeholders(rows: list[dict]) -> list[dict]:
+    """同注册号已有真实官网 ID 时，删除遗留的 B-注册号建设占位行。"""
+    real_regs = {
+        str(row.get("注册号", "")).strip().upper()
+        for row in rows
+        if row.get("注册号") and not str(row.get("飞机ID", "")).startswith("B-")
+    }
+    return [
+        row for row in rows
+        if not (str(row.get("飞机ID", "")).startswith("B-")
+                and str(row.get("注册号", "")).strip().upper() in real_regs)
+    ]
+
+
 def _write_full_fleet_snapshot(rows: list[dict]) -> bool:
     """写入完整清单，同时保留本轮开始后由服务端刷新得更晚的同机记录。"""
     with exclusive_file_lock(FLEET_CSV):
@@ -913,6 +942,10 @@ def _write_full_fleet_snapshot(rows: list[dict]) -> bool:
                                 == str(row.get("注册号", "")).strip().upper()), None)
             if current and str(current.get("建设状态", "")).strip():
                 combined = dict(current)
+                # 按注册号命中 B-占位行时，以本轮官网返回的真实 ID 完成身份升级。
+                if (str(combined.get("飞机ID", "")).startswith("B-")
+                        and row.get("飞机ID")):
+                    combined["飞机ID"] = row["飞机ID"]
                 for key in ("注册号", "距A-Check小时", "损坏率%",
                             "CO2减排放", "飞行速度增加", "耗油量减少"):
                     if str(row.get(key, "")).strip():
@@ -931,7 +964,8 @@ def _write_full_fleet_snapshot(rows: list[dict]) -> bool:
             else:
                 merged.append(row)
         return _atomic_write_csv(
-            FLEET_CSV, CSV_FIELDNAMES, merged, already_locked=True)
+            FLEET_CSV, CSV_FIELDNAMES, _collapse_build_placeholders(merged),
+            already_locked=True)
 
 
 def _write_light_fleet_snapshot(existing: dict[str, dict], new_rows: list[dict],
@@ -951,17 +985,24 @@ def _write_light_fleet_snapshot(existing: dict[str, dict], new_rows: list[dict],
                 if key in status:
                     current[key] = status.get(key, "")
         for row in new_rows:
-            current = rows.get(row["飞机ID"])
-            if current is None and row.get("注册号"):
-                current = next((item for item in rows.values()
-                                if str(item.get("注册号", "")).strip().upper()
-                                == str(row.get("注册号", "")).strip().upper()), None)
+            aircraft_id = row["飞机ID"]
+            current_key = aircraft_id if aircraft_id in rows else None
+            if current_key is None and row.get("注册号"):
+                current_key = next((key for key, item in rows.items()
+                                    if str(item.get("注册号", "")).strip().upper()
+                                    == str(row.get("注册号", "")).strip().upper()), None)
+            current = rows.get(current_key) if current_key is not None else None
             if current and str(current.get("建设状态", "")).strip():
                 for key in ("注册号", "距A-Check小时", "损坏率%"):
                     if str(row.get(key, "")).strip():
                         current[key] = row[key]
+                if (current_key != aircraft_id
+                        and str(current.get("飞机ID", "")).startswith("B-")):
+                    rows.pop(current_key, None)
+                    current["飞机ID"] = aircraft_id
+                    rows[aircraft_id] = current
             else:
-                rows[row["飞机ID"]] = row
+                rows[aircraft_id] = row
         for row in removed_rows:
             rows.pop(str(row.get("飞机ID", "")), None)
         hub_order = {h["name"]: i for i, h in enumerate(hubs)}

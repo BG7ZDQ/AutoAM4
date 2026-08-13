@@ -600,6 +600,13 @@ def _removed_aircraft_guard(task: dict) -> bool:
 
 def _cancel_removed_aircraft_tasks(removed: list[dict]) -> int:
     """取消已售出飞机的所有自动任务，并关闭对应建设记录。"""
+    # B-注册号 是建设流程尚未取得官网 ID 时的本地占位键。它不出现在官网
+    # 清单中，因此任何以该键产生的“移除”事件都不能作为售出证据。
+    removed = [
+        item for item in removed
+        if not (isinstance(item, dict)
+                and str(item.get("飞机ID", "")).strip().startswith("B-"))
+    ]
     fid_to_reg = {
         str(item.get("飞机ID", "")).strip():
             str(item.get("注册号", "")).strip().upper()
@@ -2756,10 +2763,10 @@ def api_route_build():
         payback = preflight.get("payback_days")
         _publish_log(
             f"📊 航程预计 {float(preflight.get('distance_km', 0) or 0):,.0f} km"
-            f"｜航线{stopover_text}｜单程 {float(preflight.get('flight_hours', 0) or 0):.2f} 小时｜\n"
-            f"   预估日收益 ${float(preflight.get('revenue_per_day', 0) or 0):,.0f}｜"
-            f"净利 ${float(preflight.get('net_per_day', 0) or 0):,.0f}｜\n"
-            f"   预计投入 ${investment:,.0f}｜{payback if payback is not None else '未知'} 天回本"
+            f"｜航线{stopover_text}｜单程 {float(preflight.get('flight_hours', 0) or 0):.2f} 小时｜"
+            f"预估日收益 ${float(preflight.get('revenue_per_day', 0) or 0):,.0f}｜"
+            f"净利 ${float(preflight.get('net_per_day', 0) or 0):,.0f}｜"
+            f"预计投入 ${investment:,.0f}｜{payback if payback is not None else '未知'} 天回本"
         )
         # 先只读确认是否属于“已购机后的恢复”。已有飞机不再重复计入投资，
         # 这样响应丢失后的低余额状态仍能继续建线；查询未知则不执行任何写操作。
