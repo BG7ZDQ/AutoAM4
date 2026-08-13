@@ -22,7 +22,7 @@ def main() -> None:
                 raise RuntimeError("dashboard did not expose a CSRF token")
             request = Request(
                 BASE + "/api/run",
-                data=json.dumps({"mode": "loop"}).encode("utf-8"),
+                data=json.dumps({"mode": "loop_resume"}).encode("utf-8"),
                 headers={
                     "Content-Type": "application/json",
                     "X-CSRF-Token": match.group(1),

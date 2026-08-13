@@ -358,12 +358,8 @@ def _read_log_lines() -> list[str]:
     return []
 
 
-def _load_log_history():
-    """启动时：将上次运行的日志另存为带时间戳的 .bak，然后清空日志区。
-
-    重启后刷新页面应显示"等待首次运行…"，不应看到旧日志；
-    旧日志保留在 run_log_YYYYmmdd_HHMMSS.txt.bak 供日后查阅。
-    """
+def _rotate_run_log() -> None:
+    """明确开始一轮新运行时备份并清空日志；服务重启本身不再截断日志。"""
     try:
         lf = _paths()["log"]
         if lf.exists():
@@ -375,9 +371,6 @@ def _load_log_history():
             lf.write_text("", encoding="utf-8")
     except Exception:
         pass
-
-
-_load_log_history()
 
 
 def _append_log(line: str):
@@ -3095,8 +3088,11 @@ def api_run():
         return jsonify({"ok": False, "msg": "请求 JSON 无效"}), 400
     data = data or {}
     mode = str(data.get("mode", "once"))
-    if mode not in {"once", "light", "loop"}:
-        return jsonify({"ok": False, "msg": "运行模式必须是 once、light 或 loop"}), 400
+    if mode not in {"once", "light", "loop", "loop_resume"}:
+        return jsonify({
+            "ok": False,
+            "msg": "运行模式必须是 once、light、loop 或 loop_resume",
+        }), 400
     with _run_lock:
         if _run_status["running"]:
             return jsonify({"ok": False, "msg": "脚本已在运行中，请先停止"})
@@ -3106,21 +3102,9 @@ def api_run():
         _run_status["error"] = None
         _run_status["progress_total"] = 0
         _run_status["progress_current"] = 0
-    # 清空历史日志：备份旧文件（带时间戳）后重新开始
-    try:
-        lf = _paths()["log"]
-        if lf.exists():
-            content = lf.read_text(encoding="utf-8")
-            if content.strip():
-                ts = _now_bjt().strftime("%Y%m%d_%H%M%S")
-                bak = lf.with_name(f"run_log_{ts}.txt.bak")
-                bak.write_text(content, encoding="utf-8")
-    except Exception:
-        pass
-    try:
-        _paths()["log"].write_text("", encoding="utf-8")
-    except Exception:
-        pass
+    # 普通启动开启一份新日志；续接模式保留当前 run_log.txt 并继续追加。
+    if mode != "loop_resume":
+        _rotate_run_log()
 
     _broadcast_sse({
         "type": "start",
@@ -3137,7 +3121,7 @@ def api_run():
         try:
             script = str(Path(__file__).resolve().parent / "collector.py")
             args = [sys.executable, script]
-            if _run_status["mode"] == "loop":
+            if _run_status["mode"] in {"loop", "loop_resume"}:
                 args.append("--loop")
             elif _run_status["mode"] == "light":
                 args.append("--light")
@@ -3195,7 +3179,7 @@ def api_run():
                     if _run_proc.poll() is not None:
                         break  # 进程已退出
                     now = time.time()
-                    if _mode == "loop":
+                    if _mode in {"loop", "loop_resume"}:
                         if sleep_deadline is not None:
                             # 睡眠中：超过宣布的醒来时刻 + 宽限仍未恢复 → 卡死
                             if now > sleep_deadline:

@@ -731,6 +731,52 @@ class ServerSchedulingTests(unittest.TestCase):
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("run('light')", template)
 
+    def test_resume_loop_keeps_existing_log_and_runs_collector_loop(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log = Path(temp_dir) / "run_log.txt"
+            log.write_text("existing log\n", encoding="utf-8")
+            paths = dict(server._paths())
+            paths["log"] = log
+            with patch.object(server, "_paths", return_value=paths), \
+                 patch.object(server, "_rotate_run_log") as rotate, \
+                 patch.object(server.threading, "Thread") as thread, \
+                 server.app.test_client() as client:
+                response = client.post(
+                    "/api/run", json={"mode": "loop_resume"},
+                    headers={"X-CSRF-Token": server._csrf_token},
+                )
+            persisted_log = log.read_text(encoding="utf-8")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(server._run_status["mode"], "loop_resume")
+        self.assertEqual(persisted_log, "existing log\n")
+        rotate.assert_not_called()
+        thread.assert_called_once()
+        template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn("run('loop_resume')", template)
+        server._run_status["running"] = False
+        server._run_status["mode"] = ""
+
+    def test_regular_loop_rotates_existing_log(self):
+        with patch.object(server, "_rotate_run_log") as rotate, \
+             patch.object(server.threading, "Thread"), \
+             server.app.test_client() as client:
+            response = client.post(
+                "/api/run", json={"mode": "loop"},
+                headers={"X-CSRF-Token": server._csrf_token},
+            )
+        self.assertEqual(response.status_code, 200)
+        rotate.assert_called_once()
+        server._run_status["running"] = False
+        server._run_status["mode"] = ""
+
+    def test_systemd_helper_uses_resume_loop_mode(self):
+        helper = (ROOT / "deploy" / "start_loop.py").read_text(encoding="utf-8")
+        self.assertIn('json.dumps({"mode": "loop_resume"})', helper)
+
+    def test_resume_loop_uses_loop_watchdog_policy(self):
+        source = (ROOT / "src" / "server.py").read_text(encoding="utf-8")
+        self.assertIn('if _mode in {"loop", "loop_resume"}:', source)
+
     def test_marketing_pending_is_not_marked_as_missing_route(self):
         server._pending_tasks = [{
             "id": "marketing-1",
