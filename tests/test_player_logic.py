@@ -477,6 +477,16 @@ class FleetReconciliationTests(unittest.TestCase):
 
 
 class SecurityAndPersistenceTests(unittest.TestCase):
+    def test_csrf_token_is_persisted_and_reused(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            token_path = Path(temp_dir) / "missing" / ".csrf_token"
+            with patch.object(server, "_CSRF_TOKEN_FILE", token_path):
+                first = server._load_csrf_token()
+                second = server._load_csrf_token()
+            self.assertTrue(token_path.is_file())
+            self.assertEqual(token_path.read_text(encoding="utf-8"), first)
+            self.assertEqual(second, first)
+
     def test_login_payload_url_encodes_credentials(self):
         email = "a+b@example.com"
         password = "a&b=c+d% e"

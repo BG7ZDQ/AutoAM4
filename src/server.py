@@ -133,7 +133,7 @@ _migrate_legacy_outputs()
 
 # 页面级 CSRF 令牌：由 / 路由注入前端，POST 写操作（/api/run、/api/stop）必须匹配。
 # 令牌持久化到磁盘：服务重启后不失效，已打开的页面无需刷新。
-_CSRF_TOKEN_FILE = ROOT / "work" / ".csrf_token"
+_CSRF_TOKEN_FILE = ROOT / "src" / ".csrf_token"
 
 
 def _load_csrf_token() -> str:
@@ -145,6 +145,7 @@ def _load_csrf_token() -> str:
         pass
     tok = secrets.token_urlsafe(32)
     try:
+        _CSRF_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
         _CSRF_TOKEN_FILE.write_text(tok, encoding="utf-8")
     except Exception:
         pass
