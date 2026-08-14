@@ -87,14 +87,10 @@ def _load_env():
 
 _load_env()
 
-# 凭据只从环境变量 / .env 读取，不再内置默认凭据（避免泄露进 git 历史）
+# 凭据只从环境变量 / .env 读取，不再内置默认凭据（避免泄露进 git 历史）。
+# 允许为空：纯面板/初始化场景不需要游戏账号；启动循环时才会校验凭据。
 EMAIL = os.environ.get("AM4_EMAIL", "")
 PASSWORD = os.environ.get("AM4_PASSWORD", "")
-if not EMAIL or not PASSWORD:
-    raise SystemExit(
-        "缺少 AM4 账号凭据：请设置环境变量 AM4_EMAIL / AM4_PASSWORD，"
-        "或在项目根目录创建 .env 文件（参考 .env.example）。"
-    )
 
 # 燃油低于该值时跳过需求刷新与自动起飞（可通过 .env 的 AM4_MIN_FUEL 配置，默认 200000 Lbs）
 MIN_FUEL_FOR_TAKEOFF = int(os.environ.get("AM4_MIN_FUEL", "200000"))
@@ -298,6 +294,9 @@ def classify_takeoff_response(response: str) -> str:
 
 def _ensure_login() -> bool:
     """确保本地会话属于 .env 配置的账号；账号变更时自动清除旧 cookie 重新登录。"""
+    if not EMAIL or not PASSWORD:
+        raise RuntimeError(
+            "未配置 AM4 账号凭据（AM4_EMAIL / AM4_PASSWORD），无法登录游戏")
     if _account_changed():
         print("⚠ 已更新账号数据", flush=True)
         try:
@@ -1846,6 +1845,9 @@ def main():
     mode.add_argument("--light", action="store_true", help="调试：只运行一次轻量采集")
     parser.add_argument("--interval", type=int, default=None, help="循环间隔（秒）；不传则轻量对齐 00/30、收尾补仓对齐 29/59")
     args = parser.parse_args()
+    if not EMAIL or not PASSWORD:
+        raise SystemExit(
+            "✗ 未配置 AM4 账号凭据（AM4_EMAIL / AM4_PASSWORD），无法运行采集。")
 
     global _current_delay
 

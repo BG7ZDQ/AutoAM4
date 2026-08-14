@@ -1231,6 +1231,30 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertEqual(account.get("am4_password"), "")
         server.panel_store.delete_user(user["id"])
 
+    def test_start_loop_rejects_missing_credentials(self):
+        ok, msg = server._start_loop("nobody@example.com", "", {}, "loop")
+        self.assertFalse(ok)
+        self.assertIn("凭据", msg)
+
+    def test_run_requires_account_password(self):
+        with patch.object(server, "_session_account",
+                          return_value={"email": "nobody@example.com",
+                                        "password": "", "settings": {}}), \
+             server.app.test_client() as client:
+            resp = client.post(
+                "/api/run", json={"mode": "loop"},
+                headers={"X-CSRF-Token": server._csrf_token})
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("密码", resp.get_json()["msg"])
+
+    def test_resume_targets_skip_missing_credentials(self):
+        tmp = Path(tempfile.mkdtemp()) / "active_loops.json"
+        with patch.object(server, "_ACTIVE_LOOPS_FILE", tmp), \
+             patch.object(server, "_active_credentials", return_value=("", "")), \
+             patch.object(server, "_current_env_credentials",
+                          return_value=("", "")):
+            self.assertEqual(server._resume_loop_targets(), [])
+
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
             "othadmin", "other-pass-1", is_admin=True, status="active")

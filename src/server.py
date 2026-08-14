@@ -4312,6 +4312,8 @@ def api_run():
     run_settings = run_acct.get("settings") or {}
     if not run_email:
         return jsonify({"ok": False, "msg": "请先在「设置」中绑定 AM4 游戏账号"}), 400
+    if not run_password:
+        return jsonify({"ok": False, "msg": "该账号未配置 AM4 密码，无法启动循环"}), 400
     ok, msg = _start_loop(run_email, run_password, run_settings, mode)
     if not ok:
         return jsonify({"ok": False, "msg": msg}), 409
@@ -4368,6 +4370,8 @@ def _resume_loop_targets() -> list[tuple[str, str, dict]]:
 
 def _start_loop(email: str, password: str, settings: dict, mode: str) -> tuple[bool, str]:
     """为指定账号启动独立采集循环；全局限制并发数，普通启动轮换该账号日志。"""
+    if not email or not password:
+        return False, "账号未配置 AM4 凭据（邮箱/密码），无法启动循环"
     if _account_protected(email):
         return False, "账号受保护（AM4_PROTECTED_ACCOUNTS），禁止启动循环"
     key = account_key(email)
