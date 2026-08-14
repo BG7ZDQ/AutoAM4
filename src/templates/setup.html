@@ -51,17 +51,19 @@ const CSRF = "{{ csrf_token }}";
 const USER_RE = /^[A-Za-z0-9 _/]{2,8}$/;
 function setup(){
   const tk=document.getElementById('tk').value.trim();
-  const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
-  const bu=document.getElementById('bu').value.trim(), bp=document.getElementById('bp').value;
+  const uRaw=document.getElementById('u').value, u=uRaw.trim(),
+        p=document.getElementById('p').value;
+  const buRaw=document.getElementById('bu').value, bu=buRaw.trim(),
+        bp=document.getElementById('bp').value;
   const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
-  if(!USER_RE.test(u)){
+  if(!u||uRaw!==u||!USER_RE.test(u)){
     msg.className='msg err';
-    msg.textContent='用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠';
+    msg.textContent='用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠，且头尾不能有空格';
     return;
   }
-  if(bu&&!USER_RE.test(bu)){
+  if(buRaw&&(buRaw!==bu||!USER_RE.test(bu))){
     msg.className='msg err';
-    msg.textContent='接入用户名的规则与管理员用户名一致';
+    msg.textContent='接入用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠，且头尾不能有空格';
     return;
   }
   fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},

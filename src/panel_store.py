@@ -162,7 +162,10 @@ def create_user(
     settings: dict | None = None,
 ) -> int:
     """创建用户及其 1:1 绑定的 AM4 账号记录，返回用户 id。"""
-    username = (username or "").strip()
+    raw_username = username or ""
+    if raw_username != raw_username.strip():
+        raise ValueError("用户名头尾不能有空格")
+    username = raw_username.strip()
     if not _USERNAME_RE.fullmatch(username):
         raise ValueError("用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠")
     if len(password) < 6:

@@ -49,8 +49,6 @@ button:hover{filter:brightness(1.05)}
   <input id="e" autocomplete="off" placeholder="your@example.com">
   <label>AM4 游戏密码</label>
   <input id="pw" type="password" autocomplete="new-password">
-  <label>确认 AM4 游戏密码（再次输入，未填写游戏密码时留空）</label>
-  <input id="pw2" type="password" autocomplete="new-password">
   <button type="button" class="verify" id="verifyBtn" onclick="verifyAm4()">验证 AM4 账号（可选）</button>
   <div class="msg vmsg" id="vmsg"></div>
   <div class="msg" id="msg"></div>
@@ -60,7 +58,7 @@ button:hover{filter:brightness(1.05)}
 <script>
 const CSRF = "{{ csrf_token }}";
 const USER_RE = /^[A-Za-z0-9 _/]{2,8}$/;
-const USER_HINT = '仅允许 2~8 位英文字母或数字，可含空格、_ 或 /';
+const USER_HINT = '仅允许 2~8 位英文字母或数字，可含空格、_ 或 /；头尾不能有空格';
 function err(text){const m=document.getElementById('msg');m.className='msg err';m.textContent=text;}
 function clearErr(){const m=document.getElementById('msg');m.className='msg';m.textContent='';}
 function showUErr(text){const e=document.getElementById('uerr');e.textContent=text||'';e.classList.add('show');}
@@ -68,8 +66,8 @@ function hideUErr(){const e=document.getElementById('uerr');e.textContent='';e.c
 // 用户名实时校验：标签不展示格式限制，只在输入不合规时在字段下方显示小红字
 const uEl=document.getElementById('u');
 uEl.addEventListener('input',()=>{
-  const v=uEl.value.trim();
-  if(v&&!USER_RE.test(v)){showUErr(USER_HINT);}else{hideUErr();}
+  const raw=uEl.value, v=raw.trim();
+  if(raw&&(raw!==v||!USER_RE.test(v))){showUErr(USER_HINT);}else{hideUErr();}
 });
 // 两次输入不一致时实时提示；一致或尚未输入第二次时清除
 function bindConfirm(firstId,secondId,label){
@@ -83,15 +81,11 @@ function bindConfirm(firstId,secondId,label){
   });
 }
 bindConfirm('p','p2','密码');
-bindConfirm('pw','pw2','AM4 游戏密码');
 async function verifyAm4(){
   const vmsg=document.getElementById('vmsg'), btn=document.getElementById('verifyBtn');
   const e=document.getElementById('e').value.trim(), pw=document.getElementById('pw').value;
   vmsg.className='msg vmsg'; vmsg.textContent='';
   if(!e||!pw){vmsg.className='msg vmsg err';vmsg.textContent='请先填写 AM4 邮箱和密码';return;}
-  if(pw!==document.getElementById('pw2').value){
-    vmsg.className='msg vmsg err';vmsg.textContent='AM4 游戏密码两次输入不一致';return;
-  }
   btn.disabled=true; btn.textContent='验证中…';
   try{
     const r=await fetch('/api/verify-am4',{method:'POST',
@@ -107,20 +101,18 @@ async function verifyAm4(){
   }
 }
 function reg(){
-  const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value,
+  const uRaw=document.getElementById('u').value, u=uRaw.trim(),
+        p=document.getElementById('p').value,
         p2=document.getElementById('p2').value,
         e=document.getElementById('e').value.trim(),
-        pw=document.getElementById('pw').value, pw2=document.getElementById('pw2').value;
+        pw=document.getElementById('pw').value;
   clearErr(); hideUErr();
-  if(!USER_RE.test(u)){ showUErr(USER_HINT); return; }
+  if(!u||uRaw!==u||!USER_RE.test(u)){ showUErr(USER_HINT); return; }
   if(p.length<6){
     err('密码至少 6 个字符'); return;
   }
   if(p!==p2){
     err('两次输入的密码不一致'); return;
-  }
-  if(pw&&pw!==pw2){
-    err('两次输入的 AM4 游戏密码不一致'); return;
   }
   const msg=document.getElementById('msg');
   fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},

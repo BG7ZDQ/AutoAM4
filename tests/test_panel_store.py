@@ -110,6 +110,13 @@ class PanelStoreTests(unittest.TestCase):
             ps.create_user("a" * 9, "pass-1234")
         with self.assertRaises(ValueError):
             ps.create_user("bob<script>", "pass-1234")
+        # 头尾空格拒绝
+        with self.assertRaises(ValueError):
+            ps.create_user("  Bob", "pass-1234")
+        with self.assertRaises(ValueError):
+            ps.create_user("Bob  ", "pass-1234")
+        with self.assertRaises(ValueError):
+            ps.create_user("    ", "pass-1234")
         # 字母、数字、空格、下划线、斜杠允许
         ps.create_user("player1", "pass-1234")
         ps.create_user("Bob Mar", "pass-1234")
