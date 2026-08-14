@@ -24,14 +24,23 @@ th{color:var(--t3);font-weight:500;white-space:nowrap}
 .badge.disabled{background:#fee2e2;color:var(--err)}.badge.admin{background:#dbeafe;color:var(--pri)}
 .ops{display:flex;gap:6px;flex-wrap:wrap}
 .ops button{padding:5px 9px;font-size:.78rem}
+.ops-toggle{display:none}
 .note{color:var(--t3);font-size:.85rem;margin-top:8px}
+@media(max-width:768px){
+  table thead th:nth-child(1),table tbody td:nth-child(1),
+  table thead th:nth-child(6),table tbody td:nth-child(6){display:none}
+  .ops{display:none;flex-direction:column;gap:5px;margin-top:6px;width:max-content}
+  .ops.open{display:flex}
+  .ops-toggle{display:inline-flex}
+  .card{padding:10px}
+  th,td{padding:6px 6px;font-size:.8rem}
+}
 </style>
 </head>
 <body>
 <div class="top">
   <h1>🛠 管理员面板</h1>
   <span class="sp"></span>
-  <button class="btn-ghost" onclick="location.href='/'">我的面板</button>
   <button class="btn-ghost" onclick="logout()">退出</button>
 </div>
 <div class="card">
@@ -71,7 +80,8 @@ function loadUsers(){
         '<td><span class="badge '+st+'">'+esc(u.status)+'</span></td>'+
         '<td>'+esc(u.am4_email||'—')+'</td>'+
         '<td>'+new Date(u.created_at*1000).toLocaleString()+'</td>'+
-        '<td><div class="ops">'+ops.join('')+'</div></td></tr>';
+        '<td><button class="ops-toggle btn-pri" onclick="toggleOps(this)">⚙ 操作</button>'+
+        '<div class="ops">'+ops.join('')+'</div></td></tr>';
     }).join('');
   });
 }
@@ -86,6 +96,10 @@ function delUser(id){
 function enter(id){
   api('/api/admin/impersonate',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({user_id:id})}).then(d=>{ if(d.ok) location.href='/'; else alert(d.msg); });
+}
+function toggleOps(btn){
+  var ops=btn.parentElement.querySelector('.ops');
+  if(ops)ops.classList.toggle('open');
 }
 function logout(){
   api('/api/logout',{method:'POST'}).then(()=>location.href='/login');

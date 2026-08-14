@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>管理员 - AM4 机队中心</title>
+<style>
+:root{--bg:#f3f5f9;--card:#fff;--t:#1c2430;--t3:#8a93a3;--pri:#2563eb;--brd:#e2e6ef}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--t);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+.card{background:var(--card);border:1px solid var(--brd);border-radius:14px;box-shadow:0 8px 28px rgba(20,30,60,.08);
+  padding:32px;width:100%;max-width:420px;text-align:center}
+h1{font-size:1.3rem;margin-bottom:6px}
+p{color:var(--t3);font-size:.88rem;margin-bottom:22px}
+.row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+button{padding:11px 18px;border:0;border-radius:9px;background:var(--pri);color:#fff;font-size:.95rem;cursor:pointer}
+button.ghost{background:transparent;border:1px solid var(--brd);color:var(--t)}
+.hint{margin-top:16px;font-size:.78rem;color:var(--t3)}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>👑 管理员工作台</h1>
+  <p>管理员是纯管理身份，不绑定业务账号。<br>查看任意账号请进入管理面板后点「进入」。</p>
+  <div class="row">
+    <button onclick="location.href='/admin'">🛠 进入管理面板</button>
+    <button class="ghost" onclick="logout()">退出登录</button>
+  </div>
+  <div class="hint">审核注册、停用/删除用户、模拟进入账号，都在管理面板完成。</div>
+</div>
+<script>
+const CSRF = "{{ csrf_token }}";
+function logout(){fetch('/api/logout',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.href='/login'})}
+</script>
+</body>
+</html>

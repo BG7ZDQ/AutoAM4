@@ -318,10 +318,10 @@ def _session_account() -> dict:
 
 
 def _session_paths() -> dict:
-    """当前生效账号的数据路径；未绑号时回退到循环账号。"""
+    """当前生效账号的数据路径；未绑号时指向空的隔离路径，绝不误读其他账号。"""
     email = _session_account()["email"]
     if not email:
-        return _paths()
+        return _paths_for_account("__unbound__")
     return _paths_for_account(email)
 
 
@@ -428,6 +428,8 @@ def api_update_settings():
     user = _effective_user()
     if user is None:
         return jsonify({"ok": False, "msg": "未登录"}), 401
+    if _is_admin_request() and not session.get("impersonate_uid"):
+        return jsonify({"ok": False, "msg": "管理员无业务账号设置，请经「进入」查看账号"}), 403
     data = request.get_json(silent=True) or {}
     panel_store.update_account(
         user["id"],
@@ -451,6 +453,8 @@ def api_update_account():
     user = _effective_user()
     if user is None:
         return jsonify({"ok": False, "msg": "未登录"}), 401
+    if _is_admin_request() and not session.get("impersonate_uid"):
+        return jsonify({"ok": False, "msg": "管理员无需绑定业务账号"}), 403
     data = request.get_json(silent=True) or {}
     am4_email = str(data.get("am4_email", "")).strip()
     am4_password = str(data.get("am4_password", ""))
@@ -692,7 +696,7 @@ def _session_cache_key() -> str:
     except Exception:
         email = ""
     if not email:
-        email = _active_credentials()[0]
+        return account_key("__unbound__")
     return account_key(email)
 
 
@@ -2879,7 +2883,9 @@ def _dashboard_fleet_snapshot(rows: list[dict]) -> list[dict]:
 
 @app.route("/")
 def index():
-    # 管理员同样可以访问主面板（可在设置中绑定自己的业务账号，或经模拟身份查看任意账号）
+    # 纯管理员：不展示业务仪表盘，给出管理落地页（经「进入」查看任意账号）
+    if _is_admin_request() and not session.get("impersonate_uid"):
+        return render_template("admin_home.html", csrf_token=_session_csrf())
     fleet = _fleet_rows()
     p = _paths()
     hubs = []
@@ -2903,7 +2909,7 @@ def index():
     initial_mode = "loop" if initial_running else ""
     return render_template(
         "index.html", csrf_token=_session_csrf(),
-        account=_session_account()["email"] or _active_credentials()[0],
+        account=_session_account()["email"],
         initial_running=initial_running, initial_mode=initial_mode,
         dashboard_bootstrap={
             "fleet": _dashboard_fleet_snapshot(fleet), "hubs": hubs,
@@ -2933,9 +2939,9 @@ def api_status():
         "mode": "loop" if any(r["running"] for r in runs) else "",
         "last_run": (own or {}).get("last_run"),
         "error": (own or {}).get("error"),
-        "fleet_count": len(fleet),
-        "maint_count": len(maint),
-        "account": acct["email"] or loop_email,
+            "fleet_count": len(fleet),
+            "maint_count": len(maint),
+            "account": acct.get("email", ""),
         "loop_account": loop_email,
         "username": (effective or {}).get("username"),
         "impersonating": bool(session.get("impersonate_uid")),
@@ -2965,7 +2971,7 @@ def api_stream():
                 "type": "init",
                 "running": any(r["running"] for r in runs),
                 "mode": "loop" if any(r["running"] for r in runs) else "",
-                "account": _session_account().get("email") or _active_credentials()[0],
+                "account": _session_account().get("email", ""),
                 "runs": runs,
                 "log": lines[-50:],  # 最近50条，更早的可上翻滚动加载
                 "log_start": max(0, _log_total - 50),
@@ -3542,7 +3548,7 @@ def api_pending():
     """待定任务清单（交付等待等）：按触发时间排序，含剩余秒数。"""
     now = time.time()
     acct = _session_account()
-    key = account_key(acct["email"]) if acct.get("email") else _active_account_key
+    key = account_key(acct.get("email") or "")
     with _pending_lock:
         queue = _tasks_by_account.get(key)
     if queue is None:
