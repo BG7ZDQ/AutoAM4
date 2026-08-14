@@ -213,8 +213,9 @@ tar -C "$REPO_DIR" \
 # ---------------------------------------------------------------- 密钥与令牌
 umask 077
 mkdir -p "$APP_DIR/src" "$APP_DIR/data"
-printf '%s\n' "$(gen_token)" > "$APP_DIR/src/.session_secret"
-printf '%s\n' "$(gen_token)" > "$APP_DIR/src/.service_token"
+# 已有密钥不覆盖：升级时保留会话与服务令牌，避免把在线用户全部登出
+[[ -s "$APP_DIR/src/.session_secret" ]] || printf '%s\n' "$(gen_token)" > "$APP_DIR/src/.session_secret"
+[[ -s "$APP_DIR/src/.service_token" ]] || printf '%s\n' "$(gen_token)" > "$APP_DIR/src/.service_token"
 
 # 用 printf 逐行写入：值只做一次 shell 展开，$、反引号等字符按原样落盘，
 # 避免密码/输入中的 $(...) 被再次求值造成命令注入。

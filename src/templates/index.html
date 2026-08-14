@@ -249,7 +249,7 @@ function cacheUpsert(ac){let id=String(ac['飞机ID']||''),reg=String(ac['注册
 restoreServerSnapshot(restoreDashboardCache());
 // SSE
 let es=null;
-function csse(){if(es)es.close();es=new EventSource('/api/stream');es.onopen=()=>{document.getElementById('sseDot').className='sse-dot on'};es.onerror=()=>{document.getElementById('sseDot').className='sse-dot off'};
+function csse(){if(es)es.close();es=new EventSource('/api/stream');es.onopen=()=>{document.getElementById('sseDot').className='sse-dot on'};es.onerror=()=>{document.getElementById('sseDot').className='sse-dot off';fetch('/api/status').then(function(r){if(r.status===401)location.href='/login'}).catch(function(){})};
 es.onmessage=function(e){try{let d=JSON.parse(e.data);
 if(d.type!=='init'&&d.type!=='account'&&d.type!=='pending'&&!ownEvent(d))return;
 if(d.type==='init'){if(d.account){setMyAccount(d.account);acceptAccount(d.account,d.username)}logStart=d.log_start||0;logTotal=d.log_total||0;if(d.log&&d.log.length>0)rll(d.log);if(d.maint){md=d.maint;renderMaint(md);cacheLater()}let runs0=d.runs||[];let myRun=runs0.filter(x=>String(x.account||'').toLowerCase()===MY_ACCOUNT.toLowerCase())[0]||{};r=!!myRun.running;ub(r,myRun.mode||'');uc(!!myRun.running);}
@@ -690,7 +690,7 @@ function saveSettings(){
       msg.style.color=r.ok?'var(--ac2)':'var(--dg)';
     }).catch(function(){msg.textContent='网络错误，请重试';msg.style.color='var(--dg)'});
 }
-async function api(url,opts){let r=opts?await fetch(url,opts):await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
+async function api(url,opts){let r=opts?await fetch(url,opts):await fetch(url);if(r.status===401){location.href='/login';throw new Error('登录已过期')}if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
 async function refreshAll(){await atg();await Promise.all([lmb(),ls2(),lh(),lf(),lm()])}
 let MY_ACCOUNT='';
 function setMyAccount(a){MY_ACCOUNT=String(a||'')}
