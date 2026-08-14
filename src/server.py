@@ -349,7 +349,10 @@ def _auth_gate():
         # 请求作用域数据路径 = 当前生效账号；后台线程没有 g，不受影响
         g.session_paths = _session_paths()
         if path == "/admin" and not user.get("is_admin"):
-            return redirect(url_for("index_page"))
+            return render_template(
+                "denied.html", csrf_token=_session_csrf(),
+                username=user.get("username", ""),
+            ), 403
         return None
     if path.startswith("/api/"):
         return jsonify({"ok": False, "msg": "未登录或登录已过期"}), 401
@@ -2829,9 +2832,7 @@ def _dashboard_fleet_snapshot(rows: list[dict]) -> list[dict]:
 
 @app.route("/")
 def index():
-    # 管理员（未模拟他人时）直接进管理员面板
-    if _is_admin_request() and not session.get("impersonate_uid"):
-        return redirect(url_for("admin_page"))
+    # 管理员同样可以访问主面板（可在设置中绑定自己的业务账号，或经模拟身份查看任意账号）
     fleet = _fleet_rows()
     p = _paths()
     hubs = []

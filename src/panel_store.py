@@ -222,22 +222,28 @@ def update_account(
     settings: dict | None = None,
 ) -> None:
     current = get_account(user_id)
-    if current is None:
-        return
     new_settings = normalize_settings(settings if settings is not None
-                                      else current["settings"])
+                                      else (current or {}).get("settings", {}))
     with _lock, _conn() as conn:
-        conn.execute(
-            "UPDATE accounts SET am4_email = ?, am4_password = ?, settings = ?, updated_at = ? "
-            "WHERE user_id = ?",
-            (
-                am4_email if am4_email is not None else current["am4_email"],
-                am4_password if am4_password is not None else current["am4_password"],
-                json.dumps(new_settings, ensure_ascii=False),
-                time.time(),
-                user_id,
-            ),
-        )
+        if current is None:
+            conn.execute(
+                "INSERT INTO accounts (user_id, am4_email, am4_password, settings, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, am4_email or "", am4_password or "",
+                 json.dumps(new_settings, ensure_ascii=False), time.time()),
+            )
+        else:
+            conn.execute(
+                "UPDATE accounts SET am4_email = ?, am4_password = ?, settings = ?, updated_at = ? "
+                "WHERE user_id = ?",
+                (
+                    am4_email if am4_email is not None else current["am4_email"],
+                    am4_password if am4_password is not None else current["am4_password"],
+                    json.dumps(new_settings, ensure_ascii=False),
+                    time.time(),
+                    user_id,
+                ),
+            )
 
 
 def list_users() -> list[dict]:
