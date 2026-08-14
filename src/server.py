@@ -315,6 +315,9 @@ _LOGIN_LOCK_SECONDS = 15 * 60
 _REGISTER_LIMIT_IP_PER_HOUR = 10
 _REGISTER_LIMIT_USER_PER_HOUR = 3
 _register_attempts: dict[str, list[float]] = {}
+_VERIFY_LIMIT_PER_HOUR = 10
+_verify_attempts: dict[str, list[float]] = {}
+_verify_lock = threading.Lock()
 
 
 def _login_blocked(username: str) -> bool:
@@ -461,7 +464,8 @@ def _stop_run_for_email(email: str, reason: str = "停用") -> bool:
 
 
 _PUBLIC_PAGES = {"/login", "/register", "/setup"}
-_PUBLIC_API = {"/api/login", "/api/register", "/api/setup", "/api/session", "/healthz"}
+_PUBLIC_API = {"/api/login", "/api/register", "/api/setup", "/api/session",
+               "/api/verify-am4", "/healthz"}
 
 
 @app.after_request
@@ -641,6 +645,64 @@ def api_register():
     except ValueError as exc:
         return jsonify({"ok": False, "msg": str(exc)}), 400
     return jsonify({"ok": True, "msg": "注册成功，等待管理员审核后即可登录"})
+
+
+def _verify_blocked(ip: str) -> bool:
+    """AM4 账号自愿验证按来源 IP 限流，防止被当作在线撞库通道。"""
+    now = time.time()
+    key = ip or "unknown"
+    with _verify_lock:
+        lst = [t for t in _verify_attempts.get(key, []) if now - t < 3600]
+        _verify_attempts[key] = lst
+        if len(lst) >= _VERIFY_LIMIT_PER_HOUR:
+            return True
+        lst.append(now)
+        if len(_verify_attempts) > 2000:
+            cutoff = now - 3600
+            pruned = {k: [t for t in v if t >= cutoff]
+                      for k, v in _verify_attempts.items() if v}
+            _verify_attempts.clear()
+            _verify_attempts.update(pruned)
+        return False
+
+
+def _verify_am4_credentials(email: str, password: str) -> tuple[bool, str]:
+    """用独立临时 Cookie 罐尝试 AM4 登录；不影响主会话与各账号采集循环。"""
+    import collector as ext
+    tmp_jar = _TMP_ROOT / f"am4_verify_{secrets.token_hex(12)}.txt"
+    home = ""
+    try:
+        ext._do_curl(ext.HOME, data=None, output=None, referer="",
+                     cookie_jar=tmp_jar)
+        ext._do_curl(ext.LOGIN, data=ext._login_payload(email, password),
+                     output=None, referer=ext.HOME, cookie_jar=tmp_jar)
+        home = ext._do_curl(ext.HOME, data=None, output=None, referer="",
+                            cookie_jar=tmp_jar)
+    finally:
+        tmp_jar.unlink(missing_ok=True)
+    if "headerAccount" in (home or ""):
+        return True, "AM4 账号验证通过"
+    return False, "登录失败：邮箱或密码不正确，或游戏登录页结构已变化"
+
+
+@app.route("/api/verify-am4", methods=["POST"])
+def api_verify_am4():
+    """注册页的可选验证：仅做一次独立登录尝试，不保存任何凭据。"""
+    _require_csrf()
+    if _verify_blocked(request.remote_addr or "unknown"):
+        return jsonify({"ok": False, "msg": "验证过于频繁，请稍后再试"}), 429
+    data = request.get_json(silent=True) or {}
+    email = str(data.get("am4_email", "")).strip()
+    password = str(data.get("am4_password", ""))
+    if not email or not password:
+        return jsonify({"ok": False, "msg": "请填写 AM4 邮箱和密码"}), 400
+    try:
+        ok, msg = _verify_am4_credentials(email, password)
+    except subprocess.CalledProcessError:
+        ok, msg = False, "网络错误或游戏服务不可用，请稍后再试"
+    except Exception:
+        ok, msg = False, "验证失败，请稍后再试"
+    return jsonify({"ok": ok, "msg": msg})
 
 
 @app.route("/api/setup", methods=["POST"])

@@ -180,15 +180,18 @@ MAINT_FIELDNAMES = ["检修ID", "检修类型", "飞机注册号", "费用", "�
 # 基础设施
 # ---------------------------------------------------------------------------
 
-def _do_curl(url: str, data: str | None, output: Path | None, referer: str) -> str:
+def _do_curl(url: str, data: str | None, output: Path | None, referer: str,
+             cookie_jar: Path | None = None) -> str:
     """执行单次 curl，不处理延时和重试。
 
+    cookie_jar 缺省使用全局会话 Cookie；传入独立路径时不影响主会话。
     curl 退出码 28 = 操作超时；加 --connect-timeout / --max-time 避免无限等待。
     """
+    jar = Path(cookie_jar) if cookie_jar is not None else COOKIE_JAR
     cmd = [
         CURL_BIN, "-L", "-s",
         "--connect-timeout", "20", "--max-time", "45",
-        "-b", str(COOKIE_JAR), "-c", str(COOKIE_JAR),
+        "-b", str(jar), "-c", str(jar),
         "-H", f"User-Agent: {_USER_AGENT}",
     ]
     if referer:

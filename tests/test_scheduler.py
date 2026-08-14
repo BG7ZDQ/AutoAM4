@@ -1180,6 +1180,36 @@ class ServerSchedulingTests(unittest.TestCase):
                                json={"status": "active"})
         self.assertEqual(resp.status_code, 403)
 
+    def test_verify_am4_endpoint(self):
+        with server.app.test_client() as client:
+            # 未带 CSRF：拒绝写请求
+            resp = client.post(
+                "/api/verify-am4",
+                json={"am4_email": "x@example.com", "am4_password": "p"})
+            self.assertEqual(resp.status_code, 403)
+            # 独立 Cookie 登录成功：主页含登录特征 → 通过
+            with patch.object(collector, "_do_curl",
+                              side_effect=["", "", "ok headerAccount home"]) as curl:
+                resp = client.post(
+                    "/api/verify-am4",
+                    json={"am4_email": "ok@example.com",
+                          "am4_password": "secret"},
+                    headers={"X-CSRF-Token": server._csrf_token})
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(resp.get_json()["ok"])
+            self.assertEqual(curl.call_count, 3)
+            # 密码错误：主页没有登录特征 → 明确报错
+            with patch.object(collector, "_do_curl",
+                              side_effect=["", "", "login form"]) as curl:
+                resp = client.post(
+                    "/api/verify-am4",
+                    json={"am4_email": "bad@example.com",
+                          "am4_password": "wrong"},
+                    headers={"X-CSRF-Token": server._csrf_token})
+            self.assertEqual(resp.status_code, 200)
+            self.assertFalse(resp.get_json()["ok"])
+            self.assertIn("不正确", resp.get_json()["msg"])
+
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
             "othadmin", "other-pass-1", is_admin=True, status="active")
