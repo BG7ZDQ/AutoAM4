@@ -34,7 +34,8 @@ html{font-size:16px}body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"
 .market-bar .mk-info{color:var(--t2);font-size:.8rem}
 .market-bar .mk-info b{color:var(--t)}
 .market-bar .mk-div{color:var(--t3);opacity:.4;padding:0 4px}
-@media(max-width:768px){.market-bar{flex-wrap:wrap;gap:6px 12px}.market-bar .mk-item{flex:1 1 100%}}
+.mk-fold{display:none;font-size:.8rem;color:var(--t3)}
+@media(max-width:768px){.market-bar{flex-wrap:wrap;gap:6px 12px;cursor:pointer}.market-bar .mk-item{flex:1 1 100%}.mk-fold{display:inline-flex;justify-content:center;padding:2px 0}.market-bar.collapsed .mk-hide{display:none}}
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
 .stat-card{background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:16px;box-shadow:var(--sh)}
 .stat-card .label{font-size:.8rem;color:var(--t2);margin-bottom:4px}.stat-card .value{font-size:1.8rem;font-weight:700}.stat-card .sub{font-size:.75rem;color:var(--t3);margin-top:2px}
@@ -134,14 +135,14 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <button class="btn btn-danger" id="btnStop" onclick="stop()" style="display:{{ 'inline-flex' if initial_running else 'none' }}">⏹ 停止</button>
 </div></div>
 <div class="imp-banner" id="impBanner" style="display:none;align-items:center;gap:10px;background:var(--card);border:1px solid var(--wr);border-radius:var(--r);padding:8px 14px;margin-bottom:16px;font-size:.85rem">
-  <span>👁 正在以 <b id="impName"></b> 的身份查看（管理员模拟）</span>
+  <span>👁 正在以 <b id="impName"></b> 的身份查看</span>
   <button class="btn btn-outline btn-sm" onclick="exitImpersonate()">退出模拟</button>
 </div>
 <div class="imp-banner" id="adminBanner" style="display:none;align-items:center;gap:10px;background:var(--card);border:1px solid var(--ac);border-radius:var(--r);padding:8px 14px;margin-bottom:16px;font-size:.85rem">
   <span>👑 你是管理员：可在 <a href="/admin" style="color:var(--ac)">管理面板</a> 进入任意账号，或在「设置」绑定自己的业务账号</span>
 </div>
 <div class="progress-wrap" id="pw"><div class="progress-info"><span id="pl">采集进度</span><span id="pp">0/0</span></div><div class="progress-bar-bg"><div class="progress-bar-fg" id="pb"></div></div></div>
-<div class="market-bar" id="marketBar"><span class="mk-item"><span class="mk-label">👤 账号</span> <span class="mk-val" id="acctTag">--</span></span><span class="mk-item"><span class="mk-label">⛽ 燃油价格</span> <span class="mk-val">$<span id="mkFuel">--</span></span> <span class="mk-label">🌿 CO₂价格</span> <span class="mk-val">$<span id="mkCo2">--</span></span></span><span class="mk-item"><span class="mk-label">已有燃油</span> <span class="mk-val2" id="mkFuelQty">--</span> Lbs <span class="mk-label">CO₂配额</span> <span class="mk-val2" id="mkCo2Qty">--</span></span><span class="mk-item"><span class="mk-label">更新时间</span> <span id="mkTime">--</span><span class="mk-spin" id="mkSpin" style="display:none"></span></span></div>
+<div class="market-bar" id="marketBar"><span class="mk-item mk-hide"><span class="mk-label">👤 账号</span> <span class="mk-val" id="acctTag">--</span></span><span class="mk-item"><span class="mk-label">⛽ 燃油价格</span> <span class="mk-val">$<span id="mkFuel">--</span></span></span><span class="mk-item mk-hide"><span class="mk-label">🌿 CO₂价格</span> <span class="mk-val">$<span id="mkCo2">--</span></span></span><span class="mk-item"><span class="mk-label">已有燃油</span> <span class="mk-val2" id="mkFuelQty">--</span> Lbs</span><span class="mk-item mk-hide"><span class="mk-label">CO₂配额</span> <span class="mk-val2" id="mkCo2Qty">--</span></span><span class="mk-item mk-hide"><span class="mk-label">更新时间</span> <span id="mkTime">--</span><span class="mk-spin" id="mkSpin" style="display:none"></span></span><span class="mk-item mk-fold" id="mkFold">▾</span></div>
 <div id="loopCards" style="display:none;margin-bottom:12px"></div>
 <div class="stats-grid">
 <div class="stat-card accent"><div class="label">机队总数</div><div class="value" id="sf">--</div><div class="sub">架飞机</div></div>
@@ -718,6 +719,28 @@ function renderRuns(runs){
 async function atg(){try{let s=await api('/api/status');setMyAccount(s.account||'');acceptAccount(s.account||'');let runs=s.runs||[];renderRuns(runs);let myRun=runs.filter(x=>String(x.account||'').toLowerCase()===MY_ACCOUNT.toLowerCase())[0]||{};r=!!myRun.running;ub(r,myRun.mode||'');uc(!!myRun.running);cacheLastRun=s.last_run||'';document.getElementById('lr').textContent=cacheLastRun||'--';cacheLater()}catch(e){}}
 function fmtM(v){let n=parseFloat(String(v).replace(/,/g,''));if(isNaN(n))return v;let neg=n<0?'-':'';let a=Math.abs(n);if(a>=100000){return neg+(a/1000000).toFixed(1).replace(/\.0$/,'')+'M'}return v}
 function isMobile(){return window.matchMedia('(max-width:768px)').matches}
+let mbTimer=null;
+function marketToggle(){
+  clearTimeout(mbTimer);
+  var mb=document.getElementById('marketBar');
+  if(!mb)return;
+  mb.classList.toggle('collapsed');
+  var f=document.getElementById('mkFold');
+  if(f)f.textContent=mb.classList.contains('collapsed')?'▸':'▾';
+}
+document.addEventListener('DOMContentLoaded',function(){
+  if(isMobile()){
+    var mb=document.getElementById('marketBar');
+    if(mb){
+      mb.addEventListener('click',marketToggle);
+      mbTimer=setTimeout(function(){
+        mb.classList.add('collapsed');
+        var f=document.getElementById('mkFold');
+        if(f)f.textContent='▸';
+      },3000);
+    }
+  }
+});
 let mToastT=null;
 function mToast(msg){let el=document.getElementById('mToast');if(!el){el=document.createElement('div');el.id='mToast';el.style.cssText='position:fixed;top:16px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--brd);border-radius:10px;padding:8px 18px;font-size:.85rem;color:var(--t2);box-shadow:0 4px 20px rgba(0,0,0,.35);z-index:99999;transition:opacity .3s';document.body.appendChild(el)}el.textContent=msg;el.style.opacity='1';clearTimeout(mToastT);mToastT=setTimeout(function(){el.style.opacity='0'},2500)}
 async function lmb(showToast){try{let d=await api('/api/market',{cache:'no-store'});renderMarketCache(d);document.getElementById('mkSpin').style.display=d.refreshing?'inline-block':'none';cacheLater();if(d.refreshing&&showToast)mToast('正在刷新账户资产…')}catch(e){console.error(e)}}
