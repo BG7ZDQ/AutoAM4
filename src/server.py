@@ -4536,9 +4536,11 @@ def _start_loop(email: str, password: str, settings: dict, mode: str) -> tuple[b
         pass
     if mode != "loop_resume":
         _rotate_run_log(run["paths"]["log"])
-    with _stopped_lock:
-        _stopped_accounts.discard(normalize_account(email))
-    _persist_stopped_accounts()
+    if mode in {"loop", "loop_resume"}:
+        # 只有显式恢复循环才解除停止；单次全量/轻量运行不算恢复运营
+        with _stopped_lock:
+            _stopped_accounts.discard(normalize_account(email))
+        _persist_stopped_accounts()
     _persist_active_loops()
     _broadcast_sse({"type": "start", "mode": mode, "account": email})
     threading.Thread(target=_runner, args=(run,), daemon=True).start()

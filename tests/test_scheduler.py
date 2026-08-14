@@ -1303,6 +1303,21 @@ class ServerSchedulingTests(unittest.TestCase):
             self.assertNotIn(
                 server.normalize_account("stop@example.com"),
                 server._stopped_accounts)
+            server._runs.pop(key, None)
+            # 单次全量运行不解除停止，避免顺带恢复待办运营
+            server._stopped_accounts.add(
+                server.normalize_account("stop@example.com"))
+            with patch.object(server, "_rotate_run_log"), \
+                 patch.object(server, "_broadcast_sse"), \
+                 patch.object(server, "_append_log"), \
+                 patch.object(server, "_persist_active_loops"), \
+                 patch.object(server.threading, "Thread"):
+                ok_once, _ = server._start_loop(
+                    "stop@example.com", "p", {}, "once")
+            self.assertTrue(ok_once)
+            self.assertIn(
+                server.normalize_account("stop@example.com"),
+                server._stopped_accounts)
         finally:
             server._runs.pop(key, None)
             server._stopped_accounts.discard(
