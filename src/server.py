@@ -4340,6 +4340,11 @@ def api_market():
     if retry_in > 0:
         need_fetch = False
 
+    if need_fetch and _account_manually_stopped(
+            _session_account().get("email", "")):
+        # 停止即全面停运：不再触发市场抓取线程
+        need_fetch = False
+
     if need_fetch:
         # 去重锁：同一时刻只有一个 market worker，避免 Cookie 失效时并发 curl
         if _market_rt_worker_lock.acquire(blocking=False):
@@ -4369,6 +4374,8 @@ def api_market():
 def _refresh_market_rt_worker_locked(email: str = "", password: str = "",
                                      settings: dict | None = None):
     """市场去重并串行占用在线会话，避免与航线/待办竞争 Cookie。"""
+    if _account_manually_stopped(email):
+        return
     try:
         with _online_session_lock:
             _refresh_market_rt_worker(email, password, settings)
@@ -4877,11 +4884,15 @@ def _runner(run: dict) -> None:
             pass
 
             proc.wait()
-            if (not run.get("stop_requested") and not run["error"]
-                    and proc.returncode not in (0, -15)):
-                run["error"] = f"脚本退出码: {proc.returncode}"
-            _append_log(f"脚本进程已退出（code {proc.returncode}）",
-                        paths=run_paths)
+            if run.get("stop_requested"):
+                # 用户已停止：不再向日志追加任何内容
+                pass
+            else:
+                if (not run["error"]
+                        and proc.returncode not in (0, -15)):
+                    run["error"] = f"脚本退出码: {proc.returncode}"
+                _append_log(f"脚本进程已退出（code {proc.returncode}）",
+                            paths=run_paths)
     except Exception as e:
         run["error"] = str(e)
     finally:
