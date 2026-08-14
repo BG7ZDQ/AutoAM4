@@ -102,6 +102,13 @@ _account_lock = threading.RLock()
 _active_account_email = _initial_email
 _active_account_password = _initial_password
 _active_account_key = account_key(_initial_email)
+# 循环归属账号：启动循环的用户账号（.env 启动时即 .env 账号），
+# 后续请求不再被 .env 变化拉回；同账号密码仅在仍等于 .env 配置时同步。
+_loop_owner_email = _initial_email
+# 循环归属是否由用户显式固定（启动循环时置位）；未固定时仍跟随 .env 变化
+_loop_owner_pinned = False
+# 循环账号的操作开关（自动营销/买油/CO₂/起飞），供服务端待办调度读取
+_loop_account_settings: dict = {}
 
 
 def _active_credentials() -> tuple[str, str]:
@@ -382,6 +389,39 @@ def api_session():
         "am4_email": account.get("am4_email", ""),
         "settings": (account.get("settings") or {}) if account else {},
     })
+
+
+@app.route("/api/settings")
+def api_get_settings():
+    user = _effective_user()
+    if user is None:
+        return jsonify({"ok": False, "msg": "未登录"}), 401
+    acct = panel_store.get_account(user["id"]) or {}
+    return jsonify({
+        "ok": True,
+        "am4_email": acct.get("am4_email", ""),
+        "settings": acct.get("settings") or {},
+    })
+
+
+@app.route("/api/settings", methods=["PUT"])
+def api_update_settings():
+    _require_csrf()
+    user = _effective_user()
+    if user is None:
+        return jsonify({"ok": False, "msg": "未登录"}), 401
+    data = request.get_json(silent=True) or {}
+    am4_email = str(data.get("am4_email", "")).strip()
+    am4_password = str(data.get("am4_password", ""))
+    if not am4_email or not am4_password:
+        return jsonify({"ok": False, "msg": "AM4 游戏账号和密码不能为空"}), 400
+    panel_store.update_account(
+        user["id"],
+        am4_email=am4_email,
+        am4_password=am4_password,
+        settings=data.get("settings") or {},
+    )
+    return jsonify({"ok": True, "msg": "设置已保存，下次启动循环时生效"})
 
 
 @app.route("/api/login", methods=["POST"])
@@ -900,6 +940,8 @@ def _save_pending_tasks(path: Path | None = None) -> None:
 
 def _ensure_marketing_tasks() -> None:
     """确保两种营销各有一个长期待办；首次执行会只读活动剩余时间。"""
+    if not _loop_account_settings.get("auto_marketing", True):
+        return
     now = time.time()
     with _pending_lock:
         existing = {
@@ -989,17 +1031,42 @@ def _cancel_removed_aircraft_tasks(removed: list[dict]) -> int:
     return len(cancelled)
 
 
-def _sync_account_context() -> bool:
-    """空闲时原子切换账号状态；运行中或在线操作中保持原账号不变。"""
+def _load_settings_for_email(email: str) -> dict:
+    """按 AM4 邮箱从账号库读取设置；未绑定/未找到时返回默认值。"""
+    try:
+        for u in panel_store.list_users():
+            if normalize_account(u.get("am4_email") or "") == normalize_account(email or ""):
+                acct = panel_store.get_account(u["id"])
+                if acct:
+                    return acct.get("settings") or {}
+    except Exception:
+        pass
+    return dict(panel_store.DEFAULT_SETTINGS)
+
+
+def _sync_account_context(desired_email: str | None = None,
+                          desired_password: str | None = None) -> bool:
+    """空闲时原子切换账号状态；运行中或在线操作中保持原账号不变。
+
+    默认目标为循环归属账号（面板用户启动循环后即该账号），不再被 .env
+    变化拉回；显式传参用于启动循环前切换到目标账号。
+    """
     global _active_account_email, _active_account_password, _active_account_key
+    global _loop_owner_email, _loop_owner_pinned, _loop_account_settings
     global _pending_tasks, _pending_seq, _market_rt_cache, _market_rt_ts
     global _market_rt_failures, _market_rt_retry_after, _market_rt_last_error, _maint_cache
     global _home_status_cache, _home_status_ts
 
-    desired_email, desired_password = _current_env_credentials()
+    env_email, env_password = _current_env_credentials()
+    target_email = desired_email if desired_email is not None else (
+        _loop_owner_email if _loop_owner_pinned else env_email)
+    target_password = desired_password if desired_password is not None else (
+        env_password if normalize_account(target_email) == normalize_account(env_email)
+        else _active_account_password)
     with _account_lock:
-        if normalize_account(desired_email) == normalize_account(_active_account_email):
-            _active_account_password = desired_password
+        if normalize_account(target_email) == normalize_account(_active_account_email):
+            if normalize_account(target_email) == normalize_account(env_email):
+                _active_account_password = env_password
             return True
     with _run_lock:
         if _run_status.get("running"):
@@ -1010,17 +1077,26 @@ def _sync_account_context() -> bool:
         # 与新增/保存待办保持相同锁顺序：pending → account，避免互相等待。
         with _pending_lock, _account_lock:
             # 等锁期间配置可能再次变化，重新读取最终目标。
-            desired_email, desired_password = _current_env_credentials()
-            if normalize_account(desired_email) == normalize_account(_active_account_email):
-                _active_account_password = desired_password
+            env_email2, env_password2 = _current_env_credentials()
+            target_email2 = desired_email if desired_email is not None else (
+                _loop_owner_email if _loop_owner_pinned else env_email2)
+            target_password2 = desired_password if desired_password is not None else (
+                env_password2 if normalize_account(target_email2) == normalize_account(env_email2)
+                else _active_account_password)
+            if normalize_account(target_email2) == normalize_account(_active_account_email):
+                if normalize_account(target_email2) == normalize_account(env_email2):
+                    _active_account_password = env_password2
                 return True
             old_paths = _paths_for_account(_active_account_email)
             _save_pending_tasks(old_paths["pending"])
-            _active_account_email = desired_email
-            _active_account_password = desired_password
-            _active_account_key = account_key(desired_email)
+            _active_account_email = target_email2
+            _active_account_password = target_password2
+            _active_account_key = account_key(target_email2)
+            _loop_owner_email = target_email2
+            _loop_owner_pinned = desired_email is not None
+            _loop_account_settings = _load_settings_for_email(target_email2)
             _load_pending_tasks(
-                _paths_for_account(desired_email)["pending"], _active_account_key)
+                _paths_for_account(target_email2)["pending"], _active_account_key)
             with _market_rt_lock:
                 _market_rt_cache = None
                 _market_rt_ts = 0.0
@@ -1031,7 +1107,7 @@ def _sync_account_context() -> bool:
                 _maint_cache = None
                 _home_status_cache = None
                 _home_status_ts = 0.0
-        _broadcast_sse({"type": "account", "account": desired_email})
+        _broadcast_sse({"type": "account", "account": target_email2})
         return True
     finally:
         _online_session_lock.release()
@@ -1380,6 +1456,11 @@ def _run_pending_task(task: dict) -> None:
             return
         state_key = "ad4_24h" if campaign == "airline" else "eco_12h"
         label = "广告 4（24 小时）" if campaign == "airline" else "环保营销（12 小时）"
+        if not _loop_account_settings.get("auto_marketing", True):
+            task["status"] = "cancelled"
+            task["error"] = "自动营销已关闭"
+            _publish_log(f"📣 自动营销已关闭，跳过 {label} 续期")
+            return
         _get_route_planner(require_login=True)  # 配置当前账号的服务端 Cookie 会话
         import collector as ext
         page = ext.fetch(ext.MARKETING, referer=ext.HOME)
@@ -1676,6 +1757,11 @@ def _run_pending_task(task: dict) -> None:
             return
         ci = int(params.get("cost_index", 200))
         reg = params.get("reg", "")
+        if not _loop_account_settings.get("auto_takeoff", True):
+            task["status"] = "cancelled"
+            task["error"] = "自动起飞已关闭"
+            _publish_log(f"🛫 自动起飞已关闭，取消 {reg} 的起飞待办")
+            return
         retrofit_block = _retrofit_blocks_takeoff(reg)
         if retrofit_block:
             task["status"] = "cancelled"
@@ -3470,6 +3556,21 @@ def api_run():
             "ok": False,
             "msg": "运行模式必须是 once、light、loop 或 loop_resume",
         }), 400
+
+    # 确定本次运行账号（账号切换必须发生在"运行中"置位之前，空闲时才可切换）
+    if request.headers.get("X-Service-Token", "") == _service_token:
+        run_email, run_password = _active_credentials()
+        run_settings = _load_settings_for_email(run_email)
+    else:
+        run_acct = _session_account()
+        run_email, run_password = run_acct.get("email", ""), run_acct.get("password", "")
+        run_settings = run_acct.get("settings") or {}
+        if not run_email:
+            return jsonify({"ok": False, "msg": "请先在「设置」中绑定 AM4 游戏账号"}), 400
+        if not _sync_account_context(run_email, run_password):
+            return jsonify({"ok": False, "msg": "账号正忙，请稍后再试"}), 409
+    _loop_account_settings = run_settings or _loop_account_settings
+
     with _run_lock:
         if _run_status["running"]:
             return jsonify({"ok": False, "msg": "脚本已在运行中，请先停止"})
@@ -3488,14 +3589,6 @@ def api_run():
         "mode": _run_status["mode"],
     })
 
-    # 服务令牌（systemd 续接）继续跑当前循环账号；用户启动则绑定其账号与设置
-    if request.headers.get("X-Service-Token", "") == _service_token:
-        run_email, run_password = _active_credentials()
-        run_settings: dict = {}
-    else:
-        run_acct = _session_account()
-        run_email, run_password = run_acct.get("email", ""), run_acct.get("password", "")
-        run_settings = run_acct.get("settings") or {}
     run_paths = _paths_for_account(run_email)
 
     def _runner():
@@ -3868,6 +3961,7 @@ def api_stop():
 
 # 所有调度器会调用的辅助函数和路由均已定义后，再恢复任务并启动线程。
 _load_pending_tasks()
+_loop_account_settings = _load_settings_for_email(_active_credentials()[0])
 if os.environ.get("AM4_DISABLE_SCHEDULER", "").strip() != "1":
     threading.Thread(target=_pending_scheduler_loop, daemon=True).start()
 

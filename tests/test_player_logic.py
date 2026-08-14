@@ -165,7 +165,8 @@ class ResourcePolicyTests(unittest.TestCase):
             referer=collector.HOME,
             label="正在更新燃油信息",
         )
-        buy.assert_called_once_with("fuel-page", "", "100000000")
+        buy.assert_called_once_with(
+            "fuel-page", "", "100000000", buy_fuel=True, buy_co2=True)
 
     def test_preclose_stale_cache_refreshes_current_cycle_prices(self):
         at = datetime(2026, 8, 9, 16, 59, tzinfo=collector.BJT)
@@ -190,7 +191,8 @@ class ResourcePolicyTests(unittest.TestCase):
                               return_value={"fuel": 0, "co2": 0}) as buy:
                 collector.run_preclose_topup()
         self.assertEqual(fetch.call_count, 3)
-        buy.assert_called_once_with("fuel-page", "co2-page", "90000000")
+        buy.assert_called_once_with(
+            "fuel-page", "co2-page", "90000000", buy_fuel=True, buy_co2=True)
 
     def test_purchase_respects_reserve_and_capacity(self):
         with patch.object(auto_buy, "_CASH_RESERVE", 5_000_000), \

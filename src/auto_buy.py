@@ -60,8 +60,12 @@ def _print_wait_for_price(label: str, price: float, threshold: float,
     print(f"{display}价格过高 (${price:g}/1000{unit})，暂不补货。",flush=True,)
 
 
-def auto_buy(fuel_html: str, co2_html: str, balance: str | float | None = None):
-    """启动及轻量轮次调用，直传本次已抓取的 fuel/co2 页面 HTML。"""
+def auto_buy(fuel_html: str, co2_html: str, balance: str | float | None = None,
+             *, buy_fuel: bool = True, buy_co2: bool = True):
+    """启动及轻量轮次调用，直传本次已抓取的 fuel/co2 页面 HTML。
+
+    buy_fuel / buy_co2：面板「设置」中的操作开关，关闭时跳过对应采购。
+    """
     purchased = {"fuel": 0, "co2": 0}
     try:
         try:
@@ -69,40 +73,46 @@ def auto_buy(fuel_html: str, co2_html: str, balance: str | float | None = None):
         except (TypeError, ValueError):
             cash = None
         round_budget = _MAX_RESOURCE_SPEND if _MAX_RESOURCE_SPEND > 0 else None
-        fp, fcap = _price_cap(
-            fuel_html, r"現在價格：</span><br><span class='text-danger'><b>\$\s*([\d,]+)</b>")
-        if fp is not None and fp < _FUEL_THRESHOLD and fcap > 0:
-            amount = _buy_amount(fp, fcap, cash)
-            if round_budget is not None:
-                amount = min(amount, int(round_budget * 1000.0 / fp))
-            if amount:
-                if _buy("https://www.airlinemanager.com/fuel.php", amount, "Lbs", "燃油"):
-                    purchased["fuel"] = amount
-                    if cash is not None:
-                        cash = max(0.0, cash - amount * fp / 1000.0)
-                    if round_budget is not None:
-                        round_budget = max(0.0, round_budget - amount * fp / 1000.0)
-            else:
-                print(f"当前余额低于安全阈值 (${_CASH_RESERVE:,.0f})，跳过燃油购买", flush=True)
+        if not buy_fuel:
+            print("自动买油已关闭，跳过燃油采购", flush=True)
         else:
-            _print_wait_for_price(
-                "燃油", fp, _FUEL_THRESHOLD, fcap, "Lbs"
-            ) if fp is not None else None
-        cp, ccap = _price_cap(
-            co2_html, r"每CO2配額價格</span><br><span class='text-danger'><b>\$\s*([\d,]+)</b>")
-        if cp is not None and cp < _CO2_THRESHOLD and ccap > 0:
-            amount = _buy_amount(cp, ccap, cash)
-            if round_budget is not None:
-                amount = min(amount, int(round_budget * 1000.0 / cp))
-            if amount:
-                if _buy("https://www.airlinemanager.com/co2.php", amount, "", "CO2 配额"):
-                    purchased["co2"] = amount
+            fp, fcap = _price_cap(
+                fuel_html, r"現在價格：</span><br><span class='text-danger'><b>\$\s*([\d,]+)</b>")
+            if fp is not None and fp < _FUEL_THRESHOLD and fcap > 0:
+                amount = _buy_amount(fp, fcap, cash)
+                if round_budget is not None:
+                    amount = min(amount, int(round_budget * 1000.0 / fp))
+                if amount:
+                    if _buy("https://www.airlinemanager.com/fuel.php", amount, "Lbs", "燃油"):
+                        purchased["fuel"] = amount
+                        if cash is not None:
+                            cash = max(0.0, cash - amount * fp / 1000.0)
+                        if round_budget is not None:
+                            round_budget = max(0.0, round_budget - amount * fp / 1000.0)
+                else:
+                    print(f"当前余额低于安全阈值 (${_CASH_RESERVE:,.0f})，跳过燃油购买", flush=True)
             else:
-                print(f"当前余额低于安全阈值 (${_CASH_RESERVE:,.0f})，跳过 CO₂ 购买", flush=True)
+                _print_wait_for_price(
+                    "燃油", fp, _FUEL_THRESHOLD, fcap, "Lbs"
+                ) if fp is not None else None
+        if not buy_co2:
+            print("自动买 CO₂ 已关闭，跳过 CO₂ 采购", flush=True)
         else:
-            _print_wait_for_price(
-                "CO₂", cp, _CO2_THRESHOLD, ccap, "配额"
-            ) if cp is not None else None
+            cp, ccap = _price_cap(
+                co2_html, r"每CO2配額價格</span><br><span class='text-danger'><b>\$\s*([\d,]+)</b>")
+            if cp is not None and cp < _CO2_THRESHOLD and ccap > 0:
+                amount = _buy_amount(cp, ccap, cash)
+                if round_budget is not None:
+                    amount = min(amount, int(round_budget * 1000.0 / cp))
+                if amount:
+                    if _buy("https://www.airlinemanager.com/co2.php", amount, "", "CO2 配额"):
+                        purchased["co2"] = amount
+                else:
+                    print(f"当前余额低于安全阈值 (${_CASH_RESERVE:,.0f})，跳过 CO₂ 购买", flush=True)
+            else:
+                _print_wait_for_price(
+                    "CO₂", cp, _CO2_THRESHOLD, ccap, "配额"
+                ) if cp is not None else None
     except Exception as e:
         print(f"⚠ 自动补货检查异常: {e}", flush=True)
     return purchased

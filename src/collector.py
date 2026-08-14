@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
-from account_storage import account_output_dir
+from account_storage import account_key, account_output_dir
 from storage_utils import exclusive_file_lock
 
 # Windows 下重定向 stdout 默认用 GBK，emoji/中文可能抛 UnicodeEncodeError；
@@ -99,13 +99,21 @@ if not EMAIL or not PASSWORD:
 # 燃油低于该值时跳过需求刷新与自动起飞（可通过 .env 的 AM4_MIN_FUEL 配置，默认 200000 Lbs）
 MIN_FUEL_FOR_TAKEOFF = int(os.environ.get("AM4_MIN_FUEL", "200000"))
 
+# 操作开关（面板「设置」页按账号覆盖；采集进程读取环境变量）
+AUTO_MARKETING = os.environ.get("AM4_AUTO_MARKETING", "1") == "1"
+AUTO_BUY_FUEL = os.environ.get("AM4_AUTO_BUY_FUEL", "1") == "1"
+AUTO_BUY_CO2 = os.environ.get("AM4_AUTO_BUY_CO2", "1") == "1"
+AUTO_TAKEOFF = os.environ.get("AM4_AUTO_TAKEOFF", "1") == "1"
+
 
 # 数据输出按账号隔离：换账号后各自的数据互不覆盖，随时可切回
 OUT = account_output_dir(OUTPUTS_ROOT, EMAIL, migrate_legacy=False)
 
-COOKIE_JAR = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp"))) / "am4_cookiejar.txt"
+# 并发多账号：登录会话 Cookie 按账号隔离，互不覆盖
+_cookie_key = account_key(EMAIL)
+COOKIE_JAR = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp"))) / f"am4_cookiejar_{_cookie_key}.txt"
 # 记录当前 cookie 会话归属的 .env 账号，用于检测账号配置变更
-ACCOUNT_MARKER = COOKIE_JAR.with_name("am4_cookiejar_account.txt")
+ACCOUNT_MARKER = COOKIE_JAR.with_name(f"am4_cookiejar_{_cookie_key}_account.txt")
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -1218,7 +1226,8 @@ def run_once(takeoff: bool = False):
     # 启动/全量刷新也立即检查补货；复用刚抓的页面，零额外请求。
     try:
         from auto_buy import auto_buy
-        purchased = auto_buy(fuel_html, co2_html, market.get("balance"))
+        purchased = auto_buy(fuel_html, co2_html, market.get("balance"),
+                             buy_fuel=AUTO_BUY_FUEL, buy_co2=AUTO_BUY_CO2)
         apply_purchase_to_market(market, purchased)
     except Exception as e:
         print(f"⚠ 自动补货异常: {e}", flush=True)
@@ -1482,13 +1491,16 @@ def run_once(takeoff: bool = False):
     # ---- 5.5 登记起飞待办（当日补做和 06:00 全量刷新时执行）----
     print("\n=== 登记起飞待办 ===", flush=True)
     if takeoff:
-        try:
-            from fresh_demand import enqueue_strong_demand
-            strong = [r for r in all_rows.values() if r.get("需求状态") == "旺盛"]
-            print(f"将为需求充裕的 {len(strong)} 架飞机登记起飞待办", flush=True)
-            enqueue_strong_demand(strong, status_map=status_map)
-        except Exception as e:
-            print(f"⚠ 起飞待办登记异常: {e}", flush=True)
+        if not AUTO_TAKEOFF:
+            print("自动起飞已关闭，跳过登记起飞待办", flush=True)
+        else:
+            try:
+                from fresh_demand import enqueue_strong_demand
+                strong = [r for r in all_rows.values() if r.get("需求状态") == "旺盛"]
+                print(f"将为需求充裕的 {len(strong)} 架飞机登记起飞待办", flush=True)
+                enqueue_strong_demand(strong, status_map=status_map)
+            except Exception as e:
+                print(f"⚠ 起飞待办登记异常: {e}", flush=True)
 
     # ---- 6. 摘要 ----
     known_mods = sum(1 for v in mod_map.values() if isinstance(v, dict))
@@ -1566,7 +1578,8 @@ def run_cycle():
     # 自动补货：复用本次已抓 fuel/co2 页面，在现金安全垫、单轮预算和容量内购买。
     try:
         from auto_buy import auto_buy
-        purchased = auto_buy(fuel_html, co2_html, market.get("balance"))
+        purchased = auto_buy(fuel_html, co2_html, market.get("balance"),
+                             buy_fuel=AUTO_BUY_FUEL, buy_co2=AUTO_BUY_CO2)
         apply_purchase_to_market(market, purchased)
     except Exception as e:
         print(f"⚠ 自动补货异常: {e}", flush=True)
@@ -1744,15 +1757,16 @@ def run_preclose_topup() -> None:
         market = fresh_market
         save_market_data(market)
         print(f"__MARKET__{json.dumps(market, ensure_ascii=False)}", flush=True)
-        purchased = auto_buy(fuel_html, co2_html, market.get("balance"))
+        purchased = auto_buy(fuel_html, co2_html, market.get("balance"),
+                             buy_fuel=AUTO_BUY_FUEL, buy_co2=AUTO_BUY_CO2)
         if not apply_purchase_to_market(market, purchased):
             print("本周期资源无需补仓，等待下一次检查", flush=True)
         return
 
     fuel_price = _clean_num(str(market.get("fuel_price", "0")))
     co2_price = _clean_num(str(market.get("co2_price", "0")))
-    check_fuel = 0 < fuel_price < _FUEL_THRESHOLD
-    check_co2 = 0 < co2_price < _CO2_THRESHOLD
+    check_fuel = AUTO_BUY_FUEL and 0 < fuel_price < _FUEL_THRESHOLD
+    check_co2 = AUTO_BUY_CO2 and 0 < co2_price < _CO2_THRESHOLD
     if not check_fuel and not check_co2:
         print("价格高于采购阈值，等待下一次检查", flush=True)
         return
@@ -1763,7 +1777,8 @@ def run_preclose_topup() -> None:
                  if check_fuel else "")
     co2_html = (fetch(CO2, referer=HOME, label="正在更新 CO₂ 信息")
                 if check_co2 else "")
-    purchased = auto_buy(fuel_html, co2_html, market.get("balance"))
+    purchased = auto_buy(fuel_html, co2_html, market.get("balance"),
+                         buy_fuel=AUTO_BUY_FUEL, buy_co2=AUTO_BUY_CO2)
     if not apply_purchase_to_market(market, purchased):
         print("低价资源已满，等待下一次检查", flush=True)
 
