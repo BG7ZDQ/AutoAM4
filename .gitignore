@@ -11,6 +11,7 @@ src/.service_token
 outputs/
 src/outputs/
 data/panel.db
+data/active_loops.json
 *.log
 *.log.*
 

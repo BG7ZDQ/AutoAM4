@@ -140,6 +140,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 </div>
 <div class="progress-wrap" id="pw"><div class="progress-info"><span id="pl">采集进度</span><span id="pp">0/0</span></div><div class="progress-bar-bg"><div class="progress-bar-fg" id="pb"></div></div></div>
 <div class="market-bar" id="marketBar"><span class="mk-item"><span class="mk-label">👤 账号</span> <span class="mk-val" id="acctTag">--</span></span><span class="mk-item"><span class="mk-label">⛽ 燃油价格</span> <span class="mk-val">$<span id="mkFuel">--</span></span> <span class="mk-label">🌿 CO₂价格</span> <span class="mk-val">$<span id="mkCo2">--</span></span></span><span class="mk-item"><span class="mk-label">已有燃油</span> <span class="mk-val2" id="mkFuelQty">--</span> Lbs <span class="mk-label">CO₂配额</span> <span class="mk-val2" id="mkCo2Qty">--</span></span><span class="mk-item"><span class="mk-label">更新时间</span> <span id="mkTime">--</span><span class="mk-spin" id="mkSpin" style="display:none"></span></span></div>
+<div id="loopCards" style="display:none;margin-bottom:12px"></div>
 <div class="stats-grid">
 <div class="stat-card accent"><div class="label">机队总数</div><div class="value" id="sf">--</div><div class="sub">架飞机</div></div>
 <div class="stat-card warn"><div class="label">枢纽数</div><div class="value" id="sh">--</div><div class="sub">个基地</div></div>
@@ -248,9 +249,10 @@ restoreServerSnapshot(restoreDashboardCache());
 let es=null;
 function csse(){if(es)es.close();es=new EventSource('/api/stream');es.onopen=()=>{document.getElementById('sseDot').className='sse-dot on'};es.onerror=()=>{document.getElementById('sseDot').className='sse-dot off'};
 es.onmessage=function(e){try{let d=JSON.parse(e.data);
-if(d.type==='init'){r=d.running;logStart=d.log_start||0;logTotal=d.log_total||0;if(d.account)acceptAccount(d.account);if(d.log&&d.log.length>0)rll(d.log);if(d.maint){md=d.maint;renderMaint(md);cacheLater()}ub(r,d.mode||'');uc(r);}
+if(d.type!=='init'&&d.type!=='account'&&d.type!=='pending'&&!ownEvent(d))return;
+if(d.type==='init'){if(d.account)setMyAccount(d.account);if(d.account)acceptAccount(d.account);if(d.runs)renderRuns(d.runs);logStart=d.log_start||0;logTotal=d.log_total||0;if(d.log&&d.log.length>0)rll(d.log);if(d.maint){md=d.maint;renderMaint(md);cacheLater()}let myRun=(d.runs||[]).filter(x=>String(x.account||'').toLowerCase()===MY_ACCOUNT.toLowerCase())[0]||{};r=!!myRun.running;ub(r,myRun.mode||'');uc(!!myRun.running);}
 else if(d.type==='account'){acceptAccount(d.account||'');refreshAll();lp();}
-else if(d.type==='start'){r=true;fa=true;logStart=0;logTotal=0;ub(true,d.mode);uc(true);let lc=document.getElementById('lc');if(lc.textContent.trim()==='等待首次运行…')lc.innerHTML='';document.getElementById('pw').classList.add('show');document.getElementById('fi').textContent='采集开始，保留现有数据并逐架更新…';}
+else if(d.type==='start'){r=true;fa=true;logStart=0;logTotal=0;ub(true,d.mode);uc(true);let lc=document.getElementById('lc');if(lc.textContent.trim()==='等待首次运行…')lc.innerHTML='';document.getElementById('pw').classList.add('show');document.getElementById('fi').textContent='采集开始，保留现有数据并逐架更新…';atg();}
 else if(d.type==='maint'){md=d.data;renderMaint(md);cacheLater();}
 else if(d.type==='market'){lmb(false);}
 else if(d.type==='hubs'){lh();}
@@ -259,7 +261,7 @@ else if(d.type==='progress'){upb(d.current,d.total);document.getElementById('fi'
 else if(d.type==='aircraft'){aar(d.data);ls2();upb(d.count,d.total);document.getElementById('fi').textContent='已采集 '+d.count+' / '+d.total+' 架';}
 else if(d.type==='fleet_status'){applyFleetStatus(d.data);}
 else if(d.type==='fleet_remove'){let ids=new Set((d.data||[]).map(x=>String(x['飞机ID']||'')));fd=fd.filter(x=>!ids.has(String(x['飞机ID']||'')));fdc=fdc.filter(x=>!ids.has(String(x['飞机ID']||'')));fullFd=fullFd.filter(x=>!ids.has(String(x['飞机ID']||'')));fullFdc=fullFdc.filter(x=>!ids.has(String(x['飞机ID']||'')));cacheLater();rf2();ls2();}
-else if(d.type==='done'){r=false;ub(false,'');uc(false);document.getElementById('pw').classList.remove('show');document.getElementById('sf').textContent=d.fleet_count||'0';cacheLastRun=d.last_run||'';document.getElementById('lr').textContent=cacheLastRun||'--';cacheLater();ls2();lh();lm();lmb();if(d.refresh){lf()}document.getElementById('fi').textContent='共 '+d.fleet_count+' 架';if(d.error)all('❌ 错误: '+d.error);}
+else if(d.type==='done'){r=false;ub(false,'');uc(false);document.getElementById('pw').classList.remove('show');document.getElementById('sf').textContent=d.fleet_count||'0';cacheLastRun=d.last_run||'';document.getElementById('lr').textContent=cacheLastRun||'--';cacheLater();ls2();lh();lm();lmb();if(d.refresh){lf()}document.getElementById('fi').textContent='共 '+d.fleet_count+' 架';if(d.error)all('❌ 错误: '+d.error);atg();}
 }catch(_){}}}
 csse();window.addEventListener('focus',()=>{if(es&&es.readyState===EventSource.CLOSED)csse()});
 // 余额/价格更新由 SSE market 事件推送（采集脚本 __MARKET__ 行触发）；
@@ -695,7 +697,30 @@ function saveSettings(){
 }
 async function api(url,opts){let r=opts?await fetch(url,opts):await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);return r.json()}
 async function refreshAll(){await atg();await Promise.all([lmb(),ls2(),lh(),lf(),lm()])}
-async function atg(){try{let s=await api('/api/status');acceptAccount(s.account||'');r=!!s.running;ub(r,s.mode||'');uc(r);cacheLastRun=s.last_run||'';document.getElementById('lr').textContent=cacheLastRun||'--';cacheLater()}catch(e){}}
+let MY_ACCOUNT='';
+function setMyAccount(a){MY_ACCOUNT=String(a||'')}
+function ownEvent(d){if(!d.account)return true;return MY_ACCOUNT?String(d.account).toLowerCase()===MY_ACCOUNT.toLowerCase():true}
+function renderRuns(runs){
+  let box=document.getElementById('loopCards');if(!box)return;
+  if(!runs||!runs.length){box.style.display='none';return}
+  box.style.display='block';
+  box.innerHTML=runs.map(function(r){
+    let own=MY_ACCOUNT?String(r.account||'').toLowerCase()===MY_ACCOUNT.toLowerCase():false;
+    let st=r.running?'运行中':'空闲';
+    let color=r.running?'var(--ac2)':'var(--t3)';
+    let btn='';
+    if(own&&!r.running)btn='<button class="btn btn-outline btn-sm" onclick="run(\'loop\')">▶ 启动</button>';
+    if(own&&r.running)btn='<button class="btn btn-danger btn-sm" onclick="stop()">⏹ 停止</button>';
+    let prog=r.running&&r.progress_total?(' '+r.progress_current+'/'+r.progress_total):'';
+    let err=r.error?' <span style="color:var(--dg)">('+eh(r.error)+')</span>':'';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--brd);border-radius:var(--r);margin-bottom:6px;background:var(--card)">'+
+      '<span style="width:10px;height:10px;border-radius:50%;background:'+color+';flex-shrink:0"></span>'+
+      '<span style="font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+eh(r.account.split('@')[0])+'</span>'+
+      '<span style="color:var(--t3);font-size:.78rem;white-space:nowrap">'+st+(r.mode==='light'?' · 轻量':'')+prog+'</span>'+
+      '<span style="flex:1"></span>'+err+btn+'</div>';
+  }).join('');
+}
+async function atg(){try{let s=await api('/api/status');setMyAccount(s.account||'');acceptAccount(s.account||'');let runs=s.runs||[];renderRuns(runs);let myRun=runs.filter(x=>String(x.account||'').toLowerCase()===MY_ACCOUNT.toLowerCase())[0]||{};r=!!myRun.running;ub(r,myRun.mode||'');uc(!!myRun.running);cacheLastRun=s.last_run||'';document.getElementById('lr').textContent=cacheLastRun||'--';cacheLater()}catch(e){}}
 function fmtM(v){let n=parseFloat(String(v).replace(/,/g,''));if(isNaN(n))return v;let neg=n<0?'-':'';let a=Math.abs(n);if(a>=100000){return neg+(a/1000000).toFixed(1).replace(/\.0$/,'')+'M'}return v}
 function isMobile(){return window.matchMedia('(max-width:768px)').matches}
 let mToastT=null;

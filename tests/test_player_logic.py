@@ -689,7 +689,8 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertIn(".console .warn{color:var(--wr)}", template)
         self.assertIn("mobile=matchMedia('(max-width:768px)').matches", template)
         self.assertIn("document.getElementById('sb').textContent=mobile?compact(m.balance):m.balance", template)
-        self.assertIn("r=!!s.running;ub(r,s.mode||'');uc(r)", template)
+        self.assertIn("function renderRuns(runs)", template)
+        self.assertIn("function ownEvent(d)", template)
         self.assertIn("{{ '运行中' if initial_running else '空闲' }}", template)
         self.assertIn("function chips(c)", template)
         self.assertIn("if(row['_pending_build'])tr.style.background='rgba(255,193,7,.12)'", template)
@@ -701,14 +702,17 @@ class SecurityAndPersistenceTests(unittest.TestCase):
 
 class ServerSchedulingTests(unittest.TestCase):
     def setUp(self):
-        server._pending_tasks = []
+        server._pending_tasks[:] = []
         server._pending_seq = 0
         server._active_account_email = "tests@example.invalid"
         server._active_account_password = "test-password"
         server._active_account_key = account_storage.account_key("tests@example.invalid")
-        server._run_status["running"] = False
-        server._home_status_cache = None
-        server._home_status_ts = 0
+        server._loop_owner_email = "tests@example.invalid"
+        server._loop_owner_pinned = False
+        server._refresh_pending_mirror()
+        server._runs.clear()
+        server._home_status_cache.clear()
+        server._home_status_ts.clear()
         # 隔离每个用例的建设记录，防止前序用例真实写入全局 builds.csv 后
         # 污染后续 takeoff 用例（_retrofit_blocks_takeoff 会读取该文件）。
         builds = server._paths_for_account("tests@example.invalid")["builds"]
@@ -736,7 +740,7 @@ class ServerSchedulingTests(unittest.TestCase):
                 headers={"X-CSRF-Token": server._csrf_token},
             )
         self.assertEqual(response.status_code, 400)
-        self.assertFalse(server._run_status["running"])
+        self.assertFalse(server._any_run_running())
 
     def test_light_debug_mode_is_accepted_without_ui_entry(self):
         with patch.object(server.threading, "Thread") as thread, \
@@ -747,10 +751,10 @@ class ServerSchedulingTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.get_json()["ok"])
-        self.assertEqual(server._run_status["mode"], "light")
+        self.assertEqual(
+            server._runs[server._active_account_key]["mode"], "light")
         thread.assert_called_once()
-        server._run_status["running"] = False
-        server._run_status["mode"] = ""
+        server._runs.clear()
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("run('light')", template)
 
@@ -770,14 +774,14 @@ class ServerSchedulingTests(unittest.TestCase):
                 )
             persisted_log = log.read_text(encoding="utf-8")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(server._run_status["mode"], "loop_resume")
+        self.assertEqual(
+            server._runs[server._active_account_key]["mode"], "loop_resume")
         self.assertEqual(persisted_log, "existing log\n")
         rotate.assert_not_called()
         thread.assert_called_once()
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
         self.assertNotIn("run('loop_resume')", template)
-        server._run_status["running"] = False
-        server._run_status["mode"] = ""
+        server._runs.clear()
 
     def test_regular_loop_rotates_existing_log(self):
         with patch.object(server, "_rotate_run_log") as rotate, \
@@ -789,8 +793,7 @@ class ServerSchedulingTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 200)
         rotate.assert_called_once()
-        server._run_status["running"] = False
-        server._run_status["mode"] = ""
+        server._runs.clear()
 
     def test_systemd_helper_uses_resume_loop_mode(self):
         helper = (ROOT / "deploy" / "start_loop.py").read_text(encoding="utf-8")
@@ -801,7 +804,7 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertIn('if _mode in {"loop", "loop_resume"}:', source)
 
     def test_marketing_pending_is_not_marked_as_missing_route(self):
-        server._pending_tasks = [{
+        server._pending_tasks[:] = [{
             "id": "marketing-1",
             "kind": "marketing",
             "title": "环保营销自动续期（12 小时）",
@@ -820,7 +823,7 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertIn("t.route_required && !t.route_ready", template)
 
     def test_takeoff_pending_uses_compact_mobile_fields(self):
-        server._pending_tasks = [{
+        server._pending_tasks[:] = [{
             "id": "takeoff-1", "kind": "takeoff",
             "title": "飞机 A330-2F-1 返场结束后接管起飞（航线 27989308）",
             "status": "pending", "trigger_at": time.time() + 900,
@@ -1357,7 +1360,7 @@ class ServerSchedulingTests(unittest.TestCase):
         fuel.assert_not_called()
 
     def test_removed_aircraft_cancels_owned_tasks_and_closes_build(self):
-        server._pending_tasks = [
+        server._pending_tasks[:] = [
             {"kind": "takeoff", "status": "pending", "params": {
                 "reg": "SOLD-1", "fid": "101", "route_id": "r1"}},
             {"kind": "retrofit", "status": "failed", "params": {
@@ -1423,7 +1426,7 @@ class ServerSchedulingTests(unittest.TestCase):
                 writer.writeheader()
                 writer.writerow({"注册号": "SAFE-1", "CO2减排放": "已改装",
                                  "飞行速度增加": "已改装", "耗油量减少": "已改装"})
-            server._pending_tasks = [{
+            server._pending_tasks[:] = [{
                 "kind": "retrofit", "status": "failed", "error": "旧错误",
                 "params": {"reg": "SAFE-1", "retrofit": "all"},
             }]
@@ -1617,7 +1620,7 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertEqual(rows[0]["飞机ID"], "fid-1")
 
     def test_marketing_tasks_are_persistent_and_deduplicated(self):
-        server._pending_tasks = []
+        server._pending_tasks[:] = []
         with patch.object(server, "_save_pending_tasks"):
             server._ensure_marketing_tasks()
             server._ensure_marketing_tasks()
@@ -1702,7 +1705,7 @@ class ServerSchedulingTests(unittest.TestCase):
              patch.object(server, "_broadcast_sse"):
             server._refresh_market_after_spend()
         self.assertEqual(curl.call_count, 1)
-        self.assertEqual(server._market_rt_cache["balance"], "57,000,000")
+        self.assertEqual(server._market_rt_cache[server._active_account_key]["balance"], "57,000,000")
 
     def test_task_owned_by_another_account_is_never_executed(self):
         task = {
@@ -1721,7 +1724,8 @@ class ServerSchedulingTests(unittest.TestCase):
         server._active_account_email = old_email
         server._active_account_password = "old-password"
         server._active_account_key = account_storage.account_key(old_email)
-        server._pending_tasks = [{
+        server._refresh_pending_mirror()
+        server._pending_tasks[:] = [{
             "id": "t1", "account": server._active_account_key,
             "kind": "takeoff", "status": "pending", "trigger_at": 999,
             "params": {"route_id": "old-route", "reg": "OLD-1"},
@@ -1732,26 +1736,23 @@ class ServerSchedulingTests(unittest.TestCase):
             "kind": "takeoff", "status": "pending", "trigger_at": 777,
             "params": {"route_id": "new-route", "reg": "NEW-1"},
         }])
-        server._market_rt_cache = {"balance": "123"}
-        server._maint_cache = {"warnings": [{"注册号": "OLD-1"}]}
-        with patch.object(server, "_current_env_credentials",
-                          return_value=(new_email, "new-password")):
-            self.assertTrue(server._sync_account_context())
+        server._market_rt_cache = {server._active_account_key: {"balance": "123"}}
+        server._maint_cache = {server._active_account_key: {"warnings": [{"注册号": "OLD-1"}]}}
+        self.assertTrue(server._sync_account_context(new_email, "new-password"))
         self.assertEqual(server._active_account_email, new_email)
         self.assertEqual(server._pending_tasks[0]["params"]["reg"], "NEW-1")
-        self.assertIsNone(server._market_rt_cache)
-        self.assertIsNone(server._maint_cache)
+        self.assertNotIn(server._active_account_key, server._market_rt_cache)
+        self.assertNotIn(server._active_account_key, server._maint_cache)
 
     def test_account_switch_waits_while_collector_is_running(self):
         old_email = server._active_account_email
-        server._run_status["running"] = True
+        server._runs["fake-running"] = {"running": True}
         try:
-            with patch.object(server, "_current_env_credentials",
-                              return_value=("next@example.invalid", "next-password")):
-                self.assertFalse(server._sync_account_context())
+            self.assertFalse(
+                server._sync_account_context("next@example.invalid", "next-password"))
             self.assertEqual(server._active_account_email, old_email)
         finally:
-            server._run_status["running"] = False
+            server._runs.clear()
 
     def test_unknown_balance_rejects_new_purchase_after_readonly_lookup(self):
         planner = Mock()
@@ -1872,6 +1873,16 @@ class ServerSchedulingTests(unittest.TestCase):
 
 class RouteRecoveryTests(unittest.TestCase):
     AIRCRAFT = {"id": "344", "name": "Test Jet", "capacity": 100, "eid": "312"}
+
+    def setUp(self):
+        # 隔离账号上下文：避免前序用例改动的循环归属影响本类测试
+        server._active_account_email = "tests@example.invalid"
+        server._active_account_password = "test-password"
+        server._active_account_key = account_storage.account_key("tests@example.invalid")
+        server._loop_owner_email = "tests@example.invalid"
+        server._loop_owner_pinned = False
+        server._refresh_pending_mirror()
+        server._pending_tasks[:] = []
 
     @staticmethod
     def _retrofit_page(*completed: str) -> str:

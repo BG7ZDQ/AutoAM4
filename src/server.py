@@ -211,7 +211,8 @@ def _require_csrf():
     """
     token = request.headers.get("X-CSRF-Token", "")
     valid = token == _csrf_token or token == _session_csrf() or \
-        token == _service_token
+        token == _service_token or \
+        request.headers.get("X-Service-Token", "") == _service_token
     if not valid:
         # 抛出携带 JSON 响应体的 403，避免返回 HTML 错误页（前端解析失败），
         # 同时确保调用方不 return 也会生效
@@ -290,8 +291,18 @@ def _effective_user() -> dict | None:
     return real
 
 
+# 后台待办线程的"当前任务归属账号"上下文：让在线操作使用任务所属账号的凭据与 Cookie
+_task_account_ctx = threading.local()
+
+
 def _session_account() -> dict:
-    """当前生效用户绑定的 AM4 账号（email/password/settings）。"""
+    """当前生效用户绑定的 AM4 账号（email/password/settings）。
+
+    后台待办线程没有请求上下文，优先使用任务归属账号（_task_account_ctx）。
+    """
+    ctx = getattr(_task_account_ctx, "account", None)
+    if ctx is not None:
+        return ctx
     user = _effective_user()
     if user is None:
         return {"email": "", "password": "", "settings": dict(panel_store.DEFAULT_SETTINGS)}
@@ -578,66 +589,99 @@ def _get_route_planner(require_login: bool = False):
         email, password = acct.get("email", ""), acct.get("password", "")
         # _do_curl 读取的是 extract 模块的全局 Cookie，必须与 market worker 同一套会话
         import collector as ext
-        # 并发多账号：Cookie 按账号隔离
+        # 并发多账号：服务端在线操作使用按账号隔离的 worker 会话（与采集子进程分离）
         key = account_key(email) if email else "worker"
-        ext.COOKIE_JAR = tmp_dir / f"am4_cookiejar_{key}.txt"
+        ext.COOKIE_JAR = tmp_dir / f"am4_cookiejar_{key}_worker.txt"
         ext.ACCOUNT_MARKER = ext.COOKIE_JAR.with_name(f"am4_cookiejar_{key}_account.txt")
         ext.EMAIL, ext.PASSWORD = email, password
         ext._ensure_login()
     return _route_planner
 
 _run_lock = threading.Lock()
-_run_status = {
-    "running": False,
-    "mode": "",
-    "last_run": None,
-    "error": None,
-    "progress_total": 0,
-    "progress_current": 0,
-}
-_run_proc = None
+# 并发循环注册表：account_key -> 运行状态（每个账号一个独立采集子进程）
+_runs: dict[str, dict] = {}
+MAX_CONCURRENT_LOOPS = max(1, int(os.environ.get("AM4_MAX_CONCURRENT_LOOPS", "3")))
+# 持久化"正在运行的循环账号"，供 systemd 重启后由服务令牌续接
+_ACTIVE_LOOPS_FILE = ROOT / "data" / "active_loops.json"
 _sse_clients: list[queue.Queue] = []
-_stop_requested = False  # 用户手动停止标记：区分主动停止与脚本异常退出
+
+
+def _any_run_running() -> bool:
+    with _run_lock:
+        return any(r.get("running") for r in _runs.values())
+
+
+def _runs_payload() -> list[dict]:
+    """所有循环的公开状态（不含 proc/密码等内部字段）。"""
+    with _run_lock:
+        return [{
+            "account": r.get("account_email", ""),
+            "running": bool(r.get("running")),
+            "mode": r.get("mode", ""),
+            "last_run": r.get("last_run"),
+            "error": r.get("error"),
+            "progress_total": r.get("progress_total", 0),
+            "progress_current": r.get("progress_current", 0),
+        } for r in _runs.values()]
 
 # 最新检修需求缓存（采集脚本 __MAINT__ 行写入，供实时展示）
-_maint_cache: dict | None = None
+_maint_cache: dict[str, dict] = {}
 _maint_cache_lock = threading.Lock()
-_home_status_cache: dict[str, dict] | None = None
-_home_status_ts: float = 0.0
+_home_status_cache: dict[str, dict[str, dict]] = {}
+_home_status_ts: dict[str, float] = {}
 
 # 余额/燃油库存实时缓存：页面访问立即返回旧值，后台异步刷新
-_market_rt_cache: dict | None = None
+_market_rt_cache: dict[str, dict] = {}
 _market_rt_lock = threading.Lock()
-_market_rt_ts: float = 0.0
+_market_rt_ts: dict[str, float] = {}
 _market_rt_min_interval = 120.0  # 完整抓取耗时较长；两分钟内复用缓存，避免刚成功就再次登录
 _market_rt_worker_lock = threading.Lock()  # 防止并发的 market worker 重复抓取
-_market_rt_failures = 0
-_market_rt_retry_after = 0.0
-_market_rt_last_error = ""
+_market_rt_failures: dict[str, int] = {}
+_market_rt_retry_after: dict[str, float] = {}
+_market_rt_last_error: dict[str, str] = {}
+
+
+def _session_cache_key() -> str:
+    """当前请求/后台任务归属账号的缓存键。"""
+    try:
+        email = _session_account().get("email", "")
+    except Exception:
+        email = ""
+    if not email:
+        email = _active_credentials()[0]
+    return account_key(email)
+
+
+def _current_operation_settings() -> dict:
+    """操作开关设置：后台任务取归属账号，其余取循环账号。"""
+    ctx = getattr(_task_account_ctx, "account", None)
+    if ctx is not None:
+        return ctx.get("settings") or {}
+    return _loop_account_settings
 
 
 def _market_retry_failure(message: str) -> int:
     """记录市场刷新失败并返回退避秒数（60/120/300/600，最高10分钟）。"""
-    global _market_rt_failures, _market_rt_retry_after, _market_rt_last_error
+    key = _session_cache_key()
     with _market_rt_lock:
-        _market_rt_failures += 1
-        delay = (60, 120, 300, 600)[min(_market_rt_failures - 1, 3)]
-        _market_rt_retry_after = time.time() + delay
-        _market_rt_last_error = message
+        fails = _market_rt_failures.get(key, 0) + 1
+        _market_rt_failures[key] = fails
+        delay = (60, 120, 300, 600)[min(fails - 1, 3)]
+        _market_rt_retry_after[key] = time.time() + delay
+        _market_rt_last_error[key] = message
     return delay
 
 
 def _market_retry_success() -> None:
-    global _market_rt_failures, _market_rt_retry_after, _market_rt_last_error
+    key = _session_cache_key()
     with _market_rt_lock:
-        _market_rt_failures = 0
-        _market_rt_retry_after = 0.0
-        _market_rt_last_error = ""
+        _market_rt_failures.pop(key, None)
+        _market_rt_retry_after.pop(key, None)
+        _market_rt_last_error.pop(key, None)
 
 
 def _refresh_market_after_spend() -> None:
     """扣款成功后只刷新主页余额，避免额外读取燃油/CO₂页面。"""
-    global _market_rt_cache, _market_rt_ts, _home_status_cache, _home_status_ts
     try:
         _get_route_planner(require_login=True)
         import collector as ext
@@ -647,18 +691,20 @@ def _refresh_market_after_spend() -> None:
             raise ValueError("主页未返回可识别余额")
         balance = match.group(1).strip()
         status_map = ext.parse_status_data(page)
+        key = _session_cache_key()
         with _market_rt_lock:
-            cache = dict(_market_rt_cache or {})
+            cache = dict(_market_rt_cache.get(key) or {})
             cache["balance"] = balance
             cache["updated_at"] = _now_bjt().strftime("%Y-%m-%d %H:%M:%S")
-            _market_rt_cache = cache
-            _market_rt_ts = time.time()
+            _market_rt_cache[key] = cache
+            _market_rt_ts[key] = time.time()
         if status_map:
             with _maint_cache_lock:
-                _home_status_cache = status_map
-                _home_status_ts = time.time()
-            _broadcast_operation_statuses(status_map)
-        _broadcast_sse({"type": "market", "data": cache})
+                _home_status_cache[key] = status_map
+                _home_status_ts[key] = time.time()
+            _broadcast_operation_statuses(
+                status_map, _session_account().get("email", ""))
+        _broadcast_sse({"type": "market", "data": cache, "account": _session_account().get("email", "")})
     except Exception as exc:
         _append_log(f"⚠ 扣款成功，但余额即时刷新失败：{exc}")
 
@@ -669,7 +715,6 @@ def _refresh_market_rt_worker():
     使用服务端 Cookie 会话（am4_cookiejar_worker.txt），与采集子进程隔离；
     与航线/待办在线操作通过统一锁串行，登录态过期由 _ensure_login 自动重登。
     """
-    global _market_rt_cache, _market_rt_ts, _home_status_cache, _home_status_ts
     """
     try:
         _append_log("[market-worker] 开始抓取余额")
@@ -677,17 +722,18 @@ def _refresh_market_rt_worker():
         pass
     """
     try:
-        env_email, env_password = _active_credentials()
+        acct = _session_account()
+        env_email, env_password = acct.get("email", ""), acct.get("password", "")
         if not env_email or not env_password:
             delay = _market_retry_failure(".env 缺少凭据")
             _append_log(f"[market-worker] .env 缺少凭据，{delay} 秒后重试")
             return
         import collector as ext
-        # 服务端会话：与采集子进程分离，与航线/待办通过在线会话锁串行。
+        # 服务端会话：按账号隔离，与采集子进程分离，与航线/待办通过在线会话锁串行。
         tmp_dir = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp")))
-        ext.COOKIE_JAR = tmp_dir / "am4_cookiejar_worker.txt"
-        ext.ACCOUNT_MARKER = ext.COOKIE_JAR.with_name("am4_cookiejar_worker_account.txt")
-        # 使用已经原子激活的账号凭据。
+        key = account_key(env_email)
+        ext.COOKIE_JAR = tmp_dir / f"am4_cookiejar_{key}_worker.txt"
+        ext.ACCOUNT_MARKER = ext.COOKIE_JAR.with_name(f"am4_cookiejar_{key}_account.txt")
         ext.EMAIL, ext.PASSWORD = env_email, env_password
         ext._ensure_login()  # 登录态过期自动重新登录
 
@@ -695,9 +741,9 @@ def _refresh_market_rt_worker():
         status_map = ext.parse_status_data(home_html)
         if status_map:
             with _maint_cache_lock:
-                _home_status_cache = status_map
-                _home_status_ts = time.time()
-            _broadcast_operation_statuses(status_map)
+                _home_status_cache[key] = status_map
+                _home_status_ts[key] = time.time()
+            _broadcast_operation_statuses(status_map, env_email)
         fuel_html = ext._do_curl(ext.FUEL, data=None, output=None, referer=ext.HOME)
         co2_html = ext._do_curl(ext.CO2, data=None, output=None, referer=ext.HOME)
         market = ext.parse_market_data(home_html, fuel_html, co2_html)
@@ -706,11 +752,11 @@ def _refresh_market_rt_worker():
             _append_log(f"[market-worker] 解析结果无效，保留旧缓存，{delay} 秒后重试")
             return
         with _market_rt_lock:
-            _market_rt_cache = market
-            _market_rt_ts = time.time()
+            _market_rt_cache[key] = market
+            _market_rt_ts[key] = time.time()
         _market_retry_success()
         # 不写回磁盘：避免用"只有余额/燃油"的实时快照覆盖采集脚本的完整市场快照（含价格/配额）
-        _broadcast_sse({"type": "market", "data": market})
+        _broadcast_sse({"type": "market", "data": market, "account": env_email})
         # _append_log(f"[market-worker] 成功更新余额 {market.get('balance')}")
     except Exception as e:
         try:
@@ -738,10 +784,10 @@ def _read_log_lines() -> list[str]:
     return []
 
 
-def _rotate_run_log() -> None:
+def _rotate_run_log(path: Path | None = None) -> None:
     """明确开始一轮新运行时备份并清空日志；服务重启本身不再截断日志。"""
     try:
-        lf = _paths()["log"]
+        lf = path or _paths()["log"]
         if lf.exists():
             content = lf.read_text(encoding="utf-8")
             if content.strip():
@@ -753,19 +799,49 @@ def _rotate_run_log() -> None:
         pass
 
 
-def _append_log(line: str):
+def _append_log(line: str, paths: dict | None = None):
     # 追加写盘，保留完整历史供动态加载
     try:
-        with _paths()["log"].open("a", encoding="utf-8") as f:
+        lf = (paths or _paths())["log"]
+        with lf.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
         pass
 
 
 # ===== 待定任务队列 =====
-_pending_lock = threading.Lock()
-_pending_tasks: list[dict] = []
+_pending_lock = threading.RLock()
+_tasks_by_account: dict[str, list[dict]] = {}
+_pending_tasks: list[dict] = []  # 活跃账号待办的镜像引用（兼容既有代码/测试）
 _pending_seq = 0
+
+
+def _tasks_for(owner_key: str) -> list[dict]:
+    """返回指定账号的待办队列（不存在则创建）。"""
+    with _pending_lock:
+        return _tasks_by_account.setdefault(owner_key, [])
+
+
+def _refresh_pending_mirror() -> None:
+    """让 _pending_tasks 镜像指向活跃账号的队列。"""
+    global _pending_tasks
+    with _pending_lock:
+        _pending_tasks = _tasks_by_account.setdefault(_active_account_key, [])
+
+
+def _task_owner_key() -> str:
+    """任务归属账号：请求内取登录账号；后台线程取循环账号。"""
+    ctx = getattr(_task_account_ctx, "account", None)
+    if ctx is not None and ctx.get("email"):
+        return account_key(ctx["email"])
+    try:
+        if request and _effective_user() is not None:
+            email = _session_account().get("email", "")
+            if email:
+                return account_key(email)
+    except Exception:
+        pass
+    return _active_account_key
 
 
 def _is_recoverable_network_error(error) -> bool:
@@ -924,11 +1000,19 @@ def _load_pending_tasks(path: Path | None = None, owner: str | None = None) -> N
     except Exception as e:
         _pending_tasks = []
         _append_log(f"⚠ 待办任务加载失败，未执行任何旧任务：{e}")
+    # 注册到按账号队列；加载其他账号时不影响活跃账号的镜像引用
+    owner_key = owner or _active_account_key
+    with _pending_lock:
+        _tasks_by_account[owner_key] = _pending_tasks
+        if owner_key != _active_account_key:
+            _pending_tasks = _tasks_by_account.setdefault(_active_account_key, [])
 
 
-def _save_pending_tasks(path: Path | None = None) -> None:
+def _save_pending_tasks(path: Path | None = None, owner: str | None = None) -> None:
+    owner_key = owner or _active_account_key
+    queue = _tasks_by_account.get(owner_key, _pending_tasks)
     try:
-        atomic_write_json(path or _paths()["pending"], _pending_tasks)
+        atomic_write_json(path or _paths()["pending"], queue)
     except Exception as e:
         _append_log(f"⚠ 待办任务保存失败，保留上一份完整文件：{e}")
     # 待办有变化即推 SSE，前端实时刷新清单与状态
@@ -940,7 +1024,7 @@ def _save_pending_tasks(path: Path | None = None) -> None:
 
 def _ensure_marketing_tasks() -> None:
     """确保两种营销各有一个长期待办；首次执行会只读活动剩余时间。"""
-    if not _loop_account_settings.get("auto_marketing", True):
+    if not _current_operation_settings().get("auto_marketing", True):
         return
     now = time.time()
     with _pending_lock:
@@ -1059,7 +1143,7 @@ def _sync_account_context(desired_email: str | None = None,
 
     env_email, env_password = _current_env_credentials()
     target_email = desired_email if desired_email is not None else (
-        _loop_owner_email if _loop_owner_pinned else env_email)
+        _loop_owner_email)
     target_password = desired_password if desired_password is not None else (
         env_password if normalize_account(target_email) == normalize_account(env_email)
         else _active_account_password)
@@ -1068,9 +1152,8 @@ def _sync_account_context(desired_email: str | None = None,
             if normalize_account(target_email) == normalize_account(env_email):
                 _active_account_password = env_password
             return True
-    with _run_lock:
-        if _run_status.get("running"):
-            return False
+    if _any_run_running():
+        return False
     if not _online_session_lock.acquire(blocking=False):
         return False
     try:
@@ -1079,7 +1162,7 @@ def _sync_account_context(desired_email: str | None = None,
             # 等锁期间配置可能再次变化，重新读取最终目标。
             env_email2, env_password2 = _current_env_credentials()
             target_email2 = desired_email if desired_email is not None else (
-                _loop_owner_email if _loop_owner_pinned else env_email2)
+                _loop_owner_email)
             target_password2 = desired_password if desired_password is not None else (
                 env_password2 if normalize_account(target_email2) == normalize_account(env_email2)
                 else _active_account_password)
@@ -1097,16 +1180,17 @@ def _sync_account_context(desired_email: str | None = None,
             _loop_account_settings = _load_settings_for_email(target_email2)
             _load_pending_tasks(
                 _paths_for_account(target_email2)["pending"], _active_account_key)
+            _target_key = account_key(target_email2)
             with _market_rt_lock:
-                _market_rt_cache = None
-                _market_rt_ts = 0.0
-                _market_rt_failures = 0
-                _market_rt_retry_after = 0.0
-                _market_rt_last_error = ""
+                _market_rt_cache.pop(_target_key, None)
+                _market_rt_ts.pop(_target_key, None)
+                _market_rt_failures.pop(_target_key, None)
+                _market_rt_retry_after.pop(_target_key, None)
+                _market_rt_last_error.pop(_target_key, None)
             with _maint_cache_lock:
-                _maint_cache = None
-                _home_status_cache = None
-                _home_status_ts = 0.0
+                _maint_cache.pop(_target_key, None)
+                _home_status_cache.pop(_target_key, None)
+                _home_status_ts.pop(_target_key, None)
         _broadcast_sse({"type": "account", "account": target_email2})
         return True
     finally:
@@ -1122,8 +1206,9 @@ def _add_pending_task(kind: str, title: str, trigger_at: float, params: dict,
     global _pending_seq
     if jitter > 0:
         trigger_at += random.uniform(0, jitter)
-    owner = _active_account_key
+    owner = _task_owner_key()
     with _pending_lock:
+        queue = _tasks_by_account.setdefault(owner, [])
         # 玩家可能连续点击建设、刷新任务或重启服务；同一业务动作只保留一条。
         identity_keys = {
             "takeoff": ("route_id", "reg"),
@@ -1134,7 +1219,7 @@ def _add_pending_task(kind: str, title: str, trigger_at: float, params: dict,
         }.get(kind, ())
         if identity_keys:
             identity = tuple(str(params.get(k, "")) for k in identity_keys)
-            for old in _pending_tasks:
+            for old in queue:
                 old_identity = tuple(str((old.get("params") or {}).get(k, ""))
                                      for k in identity_keys)
                 if (old.get("kind") == kind and old.get("status") in ("pending", "running")
@@ -1161,7 +1246,7 @@ def _add_pending_task(kind: str, title: str, trigger_at: float, params: dict,
                         if kind == "takeoff" and params.get("reason") == "全量扫描发现":
                             old.pop("retry", None)
                             old["error"] = None
-                        _save_pending_tasks()
+                        _save_pending_tasks(owner=owner)
                     result = dict(old)
                     result["deduplicated"] = True
                     result["trigger_changed"] = abs(
@@ -1180,8 +1265,8 @@ def _add_pending_task(kind: str, title: str, trigger_at: float, params: dict,
             "params": params,
             "error": None,
         }
-        _pending_tasks.append(task)
-        _save_pending_tasks()
+        queue.append(task)
+        _save_pending_tasks(owner=owner)
     result = dict(task)
     result["deduplicated"] = False
     result["trigger_changed"] = True
@@ -1456,7 +1541,7 @@ def _run_pending_task(task: dict) -> None:
             return
         state_key = "ad4_24h" if campaign == "airline" else "eco_12h"
         label = "广告 4（24 小时）" if campaign == "airline" else "环保营销（12 小时）"
-        if not _loop_account_settings.get("auto_marketing", True):
+        if not _current_operation_settings().get("auto_marketing", True):
             task["status"] = "cancelled"
             task["error"] = "自动营销已关闭"
             _publish_log(f"📣 自动营销已关闭，跳过 {label} 续期")
@@ -1757,7 +1842,7 @@ def _run_pending_task(task: dict) -> None:
             return
         ci = int(params.get("cost_index", 200))
         reg = params.get("reg", "")
-        if not _loop_account_settings.get("auto_takeoff", True):
+        if not _current_operation_settings().get("auto_takeoff", True):
             task["status"] = "cancelled"
             task["error"] = "自动起飞已关闭"
             _publish_log(f"🛫 自动起飞已关闭，取消 {reg} 的起飞待办")
@@ -1912,21 +1997,55 @@ def _run_pending_task(task: dict) -> None:
     task["error"] = f"未知任务类型: {kind}"
 
 
+def _account_ctx_for_key(key: str) -> dict | None:
+    """按账号键取执行上下文（凭据 + 设置）；优先运行中的循环。"""
+    with _run_lock:
+        for r in _runs.values():
+            if r.get("account_key") == key and r.get("running"):
+                return {"email": r.get("account_email", ""),
+                        "password": r.get("password", ""),
+                        "settings": r.get("settings") or {}}
+    try:
+        for u in panel_store.list_users():
+            email = u.get("am4_email") or ""
+            if email and account_key(email) == key:
+                acct = panel_store.get_account(u["id"])
+                if acct:
+                    return {"email": email,
+                            "password": acct.get("am4_password", ""),
+                            "settings": acct.get("settings") or {}}
+    except Exception:
+        pass
+    return None
+
+
 def _pending_scheduler_loop() -> None:
-    """后台调度线程：每 20 秒检查一次到期任务并执行。"""
+    """后台调度线程：每 20 秒扫描所有账号队列，按任务归属账号执行到期任务。"""
     while True:
         try:
             _sync_account_context()
             with _pending_lock:
-                due = [
-                    t for t in _pending_tasks
-                    if t.get("status") == "pending" and t.get("trigger_at", 0) <= time.time()
-                ]
-            for t in due:
+                due: list[tuple[str, dict]] = []
+                for owner_key, queue in list(_tasks_by_account.items()):
+                    for t in queue:
+                        if (t.get("status") == "pending"
+                                and t.get("trigger_at", 0) <= time.time()):
+                            due.append((owner_key, t))
+                due.sort(key=lambda item: item[1].get("trigger_at", 0))
+            for owner_key, t in due:
                 with _pending_lock:
                     if t.get("status") != "pending":
                         continue
                     t["status"] = "running"
+                ctx = _account_ctx_for_key(owner_key)
+                if ctx is None or not ctx.get("email"):
+                    t["status"] = "failed"
+                    t["error"] = "账号未绑定，无法执行"
+                    _save_pending_tasks(owner=owner_key)
+                    continue
+                # 任务归属账号上下文：在线操作使用该账号凭据与 Cookie
+                _task_account_ctx.account = ctx
+                _task_account_ctx.paths = _paths_for_account(ctx["email"])
                 try:
                     _run_pending_task(t)
                 except Exception as e:
@@ -1945,8 +2064,12 @@ def _pending_scheduler_loop() -> None:
                         _defer_online_failure(t, "scheduler", f"待办执行异常：{e}")
                         msg = f"⏳ {t.get('title')}：{t.get('error', e)}"
                     _append_log(msg)
-                    _broadcast_sse({"type": "log", "line": msg})
-                _save_pending_tasks()
+                    _broadcast_sse({"type": "log", "line": msg,
+                                    "account": ctx.get("email", "")})
+                _save_pending_tasks(
+                    path=_paths_for_account(ctx["email"])["pending"], owner=owner_key)
+                _task_account_ctx.account = None
+                _task_account_ctx.paths = None
                 time.sleep(3)  # 多个任务同时到期时逐个执行并间隔，避免同时请求游戏
         except Exception:
             pass
@@ -2176,7 +2299,7 @@ def _fleet_rows() -> list[dict]:
             br["_pending_build"] = "1"
             rows.append(br)
     with _maint_cache_lock:
-        statuses = dict(_home_status_cache or {})
+        statuses = _home_status_cache.get(_session_cache_key(), {})
     status_by_reg = {
         str(item.get("注册号", "")).strip().upper(): item
         for item in statuses.values() if isinstance(item, dict)
@@ -2235,10 +2358,12 @@ def _operation_status_payload(status_map: dict | None) -> list[dict]:
     return payload
 
 
-def _broadcast_operation_statuses(status_map: dict | None) -> None:
+def _broadcast_operation_statuses(status_map: dict | None,
+                                  account_key: str | None = None) -> None:
     payload = _operation_status_payload(status_map)
     if payload:
-        _broadcast_sse({"type": "fleet_status", "data": payload})
+        _broadcast_sse({"type": "fleet_status", "data": payload,
+                        "account": account_key})
 
 
 def _broadcast_operation_status(reg: str, state: str, until: float = 0,
@@ -2456,11 +2581,11 @@ def _refresh_fleet_row(reg: str, fid: str, hub_id: str, *,
 def _latest_home_maintenance(planner, reg: str,
                              force_refresh: bool = False) -> dict | None:
     """读取共享的主页检修状态；改装提交后可强制补读一次最新“待定”时间。"""
-    global _home_status_cache, _home_status_ts
     now = time.time()
+    key = _session_cache_key()
     with _maint_cache_lock:
-        cached = _home_status_cache
-        cached_at = _home_status_ts
+        cached = _home_status_cache.get(key)
+        cached_at = _home_status_ts.get(key, 0.0)
     if force_refresh or cached is None or now - cached_at > 120:
         try:
             page = planner._do_curl(planner.HOME, data=None, output=None, referer=planner.HOME)
@@ -2475,10 +2600,11 @@ def _latest_home_maintenance(planner, reg: str,
         except Exception:
             return None
         with _maint_cache_lock:
-            _home_status_cache = fresh
-            _home_status_ts = now
-        _broadcast_operation_statuses(fresh)
+            _home_status_cache[key] = fresh
+            _home_status_ts[key] = now
+        _broadcast_operation_statuses(fresh, _session_account().get("email", ""))
         cached = fresh
+    cached = cached or {}
     target = str(reg or "").strip().upper()
     return next((status for status in cached.values()
                  if str(status.get("注册号", "")).strip().upper() == target), {})
@@ -2583,8 +2709,9 @@ def _current_balance() -> float | None:
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         pass
     with _market_rt_lock:
-        if _market_rt_cache is not None and str(_market_rt_cache.get("balance", "")).strip():
-            raw = _market_rt_cache.get("balance")
+        rt = _market_rt_cache.get(_session_cache_key())
+        if rt is not None and str(rt.get("balance", "")).strip():
+            raw = rt.get("balance")
     try:
         text = re.sub(r"[^0-9.-]", "", str(raw or ""))
         if not text:
@@ -2709,9 +2836,9 @@ def index():
         except Exception:
             market = None
     maint = _maintenance_payload()
-    with _run_lock:
-        initial_running = bool(_run_status.get("running"))
-        initial_mode = str(_run_status.get("mode", ""))
+    runs = _runs_payload()
+    initial_running = any(r["running"] for r in runs)
+    initial_mode = "loop" if initial_running else ""
     return render_template(
         "index.html", csrf_token=_session_csrf(),
         account=_session_account()["email"] or _active_credentials()[0],
@@ -2736,21 +2863,24 @@ def api_status():
     loop_email = _active_credentials()[0]
     acct = _session_account()
     effective = _effective_user()
-    with _run_lock:
-        status = {
-            "running": _run_status["running"],
-            "mode": _run_status["mode"],
-            "last_run": _run_status["last_run"],
-            "error": _run_status["error"],
-            "fleet_count": len(fleet),
-            "maint_count": len(maint),
-            "account": acct["email"] or loop_email,
-            "loop_account": loop_email,
-            "username": (effective or {}).get("username"),
-            "impersonating": bool(session.get("impersonate_uid")),
-            "progress_total": _run_status["progress_total"],
-            "progress_current": _run_status["progress_current"],
-        }
+    runs = _runs_payload()
+    own = next((r for r in runs if normalize_account(r["account"]) == normalize_account(
+        acct.get("email") or loop_email)), None)
+    status = {
+        "running": any(r["running"] for r in runs),
+        "mode": "loop" if any(r["running"] for r in runs) else "",
+        "last_run": (own or {}).get("last_run"),
+        "error": (own or {}).get("error"),
+        "fleet_count": len(fleet),
+        "maint_count": len(maint),
+        "account": acct["email"] or loop_email,
+        "loop_account": loop_email,
+        "username": (effective or {}).get("username"),
+        "impersonating": bool(session.get("impersonate_uid")),
+        "progress_total": (own or {}).get("progress_total", 0),
+        "progress_current": (own or {}).get("progress_current", 0),
+        "runs": runs,
+    }
     return jsonify(status)
 
 
@@ -2765,17 +2895,21 @@ def api_stream():
             lines = _read_log_lines()
             _log_total = len(lines)
             with _maint_cache_lock:
-                _maint_init = _maint_cache
+                _maint_init = _maint_cache.get(_session_cache_key())
+            runs = _runs_payload()
+            own = next((r for r in runs if normalize_account(r["account"]) == normalize_account(
+                _session_account().get("email") or _active_credentials()[0])), None)
             initial = {
                 "type": "init",
-                "running": _run_status["running"],
-                "mode": _run_status.get("mode", ""),
-                "account": _active_credentials()[0],
+                "running": any(r["running"] for r in runs),
+                "mode": "loop" if any(r["running"] for r in runs) else "",
+                "account": _session_account().get("email") or _active_credentials()[0],
+                "runs": runs,
                 "log": lines[-50:],  # 最近50条，更早的可上翻滚动加载
                 "log_start": max(0, _log_total - 50),
                 "log_total": _log_total,
-                "progress_total": _run_status.get("progress_total", 0),
-                "progress_current": _run_status.get("progress_current", 0),
+                "progress_total": (own or {}).get("progress_total", 0),
+                "progress_current": (own or {}).get("progress_current", 0),
                 "maint": _maint_init,
             }
             yield f"data: {json.dumps(initial, ensure_ascii=False)}\n\n"
@@ -3346,24 +3480,22 @@ def api_pending():
     """待定任务清单（交付等待等）：按触发时间排序，含剩余秒数。"""
     now = time.time()
     acct = _session_account()
-    loop_email = _active_credentials()[0]
-    if not acct["email"] or normalize_account(acct["email"]) == normalize_account(loop_email):
-        # 当前循环账号：使用内存待办（调度器正在维护）
-        with _pending_lock:
-            tasks = sorted(
-                (t for t in _pending_tasks if t.get("status") in ("pending", "running", "failed")),
-                key=lambda t: t.get("trigger_at", 0),
-            )
-    else:
-        # 其他账号：直接读该账号的待办文件（其循环未在本地调度器中运行）
+    key = account_key(acct["email"]) if acct.get("email") else _active_account_key
+    with _pending_lock:
+        queue = _tasks_by_account.get(key)
+    if queue is None:
+        # 内存中无该账号队列：直接读其待办文件
         try:
             tasks = json.loads(_session_paths()["pending"].read_text(encoding="utf-8"))
-            tasks = sorted(
-                (t for t in tasks if t.get("status") in ("pending", "running", "failed")),
-                key=lambda t: t.get("trigger_at", 0),
-            )
         except Exception:
             tasks = []
+    else:
+        with _pending_lock:
+            tasks = [dict(t) for t in queue]
+    tasks = sorted(
+        (t for t in tasks if t.get("status") in ("pending", "running", "failed")),
+        key=lambda t: t.get("trigger_at", 0),
+    )
     out = [{
         "id": t["id"],
         "kind": t.get("kind"),
@@ -3397,13 +3529,14 @@ def api_pending_cancel(tid: str):
     """取消一条尚未执行的待定任务。"""
     _require_csrf()
     with _pending_lock:
-        for t in _pending_tasks:
-            if t["id"] == tid and t.get("status") == "pending":
-                t["status"] = "cancelled"
-                _save_pending_tasks()
-                if t.get("kind") == "delivery_continue":
-                    _mark_build(t.get("params", {}).get("reg", ""), status="cancelled")
-                return jsonify({"ok": True, "msg": "已取消"})
+        for owner_key, queue in list(_tasks_by_account.items()):
+            for t in queue:
+                if t["id"] == tid and t.get("status") == "pending":
+                    t["status"] = "cancelled"
+                    _save_pending_tasks(owner=owner_key)
+                    if t.get("kind") == "delivery_continue":
+                        _mark_build(t.get("params", {}).get("reg", ""), status="cancelled")
+                    return jsonify({"ok": True, "msg": "已取消"})
     return jsonify({"ok": False, "error": "任务不存在或已执行"}), 404
 
 
@@ -3416,8 +3549,9 @@ def _maintenance_payload() -> dict:
     """飞机检修预警：只返回需要检修的飞机（A-Check 优先、高损坏率次之）。"""
     # 优先返回采集脚本实时推送的检修预警缓存
     with _maint_cache_lock:
-        if _maint_cache is not None:
-            return _maint_cache
+        cached = _maint_cache.get(_session_cache_key())
+        if cached is not None:
+            return cached
 
     fleet = _read_csv(_paths()["fleet"])
 
@@ -3491,23 +3625,25 @@ def api_market():
         except Exception:
             pass
     now = time.time()
+    cache_key = _session_cache_key()
     with _market_rt_lock:
-        if is_loop_account and _market_rt_cache is not None:
+        rt = _market_rt_cache.get(cache_key)
+        if is_loop_account and rt is not None:
             # 实时缓存覆盖余额/燃油库存（抓取会更新）
-            data["balance"] = _market_rt_cache.get("balance", data.get("balance", ""))
-            data["fuel_qty"] = _market_rt_cache.get("fuel_qty", data.get("fuel_qty", ""))
-            data["co2_qty"] = _market_rt_cache.get("co2_qty", data.get("co2_qty", ""))
-            data["co2_price"] = _market_rt_cache.get("co2_price", data.get("co2_price", ""))
-            data["fuel_price"] = _market_rt_cache.get("fuel_price", data.get("fuel_price", ""))
-            data["updated_at"] = _market_rt_cache.get("updated_at", data.get("updated_at", ""))
-            need_fetch = (now - _market_rt_ts) > _market_rt_min_interval
+            data["balance"] = rt.get("balance", data.get("balance", ""))
+            data["fuel_qty"] = rt.get("fuel_qty", data.get("fuel_qty", ""))
+            data["co2_qty"] = rt.get("co2_qty", data.get("co2_qty", ""))
+            data["co2_price"] = rt.get("co2_price", data.get("co2_price", ""))
+            data["fuel_price"] = rt.get("fuel_price", data.get("fuel_price", ""))
+            data["updated_at"] = rt.get("updated_at", data.get("updated_at", ""))
+            need_fetch = (now - _market_rt_ts.get(cache_key, 0.0)) > _market_rt_min_interval
         elif is_loop_account:
             need_fetch = True
         else:
             # 非循环账号不触发全局 market worker，只展示该账号磁盘快照
             need_fetch = False
-        retry_in = max(0, int(_market_rt_retry_after - now))
-        retry_error = _market_rt_last_error
+        retry_in = max(0, int(_market_rt_retry_after.get(cache_key, 0.0) - now))
+        retry_error = _market_rt_last_error.get(cache_key, "")
 
     if retry_in > 0:
         need_fetch = False
@@ -3545,7 +3681,6 @@ def _refresh_market_rt_worker_locked():
 @app.route("/api/run", methods=["POST"])
 def api_run():
     _require_csrf()
-    global _run_status, _run_proc, _stop_requested
     data = request.get_json(silent=True)
     if request.is_json and data is None:
         return jsonify({"ok": False, "msg": "请求 JSON 无效"}), 400
@@ -3557,121 +3692,201 @@ def api_run():
             "msg": "运行模式必须是 once、light、loop 或 loop_resume",
         }), 400
 
-    # 确定本次运行账号（账号切换必须发生在"运行中"置位之前，空闲时才可切换）
     if request.headers.get("X-Service-Token", "") == _service_token:
-        run_email, run_password = _active_credentials()
-        run_settings = _load_settings_for_email(run_email)
-    else:
-        run_acct = _session_account()
-        run_email, run_password = run_acct.get("email", ""), run_acct.get("password", "")
-        run_settings = run_acct.get("settings") or {}
-        if not run_email:
-            return jsonify({"ok": False, "msg": "请先在「设置」中绑定 AM4 游戏账号"}), 400
-        if not _sync_account_context(run_email, run_password):
-            return jsonify({"ok": False, "msg": "账号正忙，请稍后再试"}), 409
-    _loop_account_settings = run_settings or _loop_account_settings
+        # 服务令牌（systemd 启动）：续接上次正在运行的循环，每个账号独立启动
+        if mode != "loop_resume":
+            return jsonify({"ok": False, "msg": "服务令牌仅支持 loop_resume"}), 400
+        targets = _resume_loop_targets()
+        started, errors = [], []
+        for email, password, settings in targets:
+            ok, msg = _start_loop(email, password, settings, mode="loop")
+            if ok:
+                started.append(email)
+            else:
+                errors.append(f"{email}: {msg}")
+        return jsonify({"ok": True, "started": started, "errors": errors,
+                        "msg": f"已恢复 {len(started)} 个循环" if started else "没有需要续接的循环"})
 
-    with _run_lock:
-        if _run_status["running"]:
-            return jsonify({"ok": False, "msg": "脚本已在运行中，请先停止"})
-        _stop_requested = False
-        _run_status["running"] = True
-        _run_status["mode"] = mode
-        _run_status["error"] = None
-        _run_status["progress_total"] = 0
-        _run_status["progress_current"] = 0
-    # 普通启动开启一份新日志；续接模式保留当前 run_log.txt 并继续追加。
-    if mode != "loop_resume":
-        _rotate_run_log()
+    run_acct = _session_account()
+    run_email = run_acct.get("email", "")
+    run_password = run_acct.get("password", "")
+    run_settings = run_acct.get("settings") or {}
+    if not run_email:
+        return jsonify({"ok": False, "msg": "请先在「设置」中绑定 AM4 游戏账号"}), 400
+    ok, msg = _start_loop(run_email, run_password, run_settings, mode)
+    if not ok:
+        return jsonify({"ok": False, "msg": msg}), 409
+    return jsonify({"ok": True, "msg": "脚本已启动", "account": run_email})
 
-    _broadcast_sse({
-        "type": "start",
-        "mode": _run_status["mode"],
-    })
 
-    run_paths = _paths_for_account(run_email)
+def _persist_active_loops() -> None:
+    """把正在运行的循环账号写入状态文件，供 systemd 重启后续接。"""
+    try:
+        with _run_lock:
+            emails = [r.get("account_email", "")
+                      for r in _runs.values() if r.get("running")]
+        _ACTIVE_LOOPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _ACTIVE_LOOPS_FILE.write_text(
+            json.dumps(emails, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
-    def _runner():
-        global _run_status, _run_proc, _market_rt_cache, _market_rt_ts, _maint_cache
-        global _home_status_cache, _home_status_ts
-        seen_aircraft_ids: set[str] = set()
+
+def _resume_loop_targets() -> list[tuple[str, str, dict]]:
+    """读取上次运行中的账号，逐个解析凭据与设置用于续接。"""
+    targets = []
+    try:
+        if _ACTIVE_LOOPS_FILE.exists():
+            emails = json.loads(_ACTIVE_LOOPS_FILE.read_text(encoding="utf-8"))
+        else:
+            emails = [_active_credentials()[0]]
+    except Exception:
+        emails = [_active_credentials()[0]]
+    for email in emails:
+        if not email:
+            continue
+        settings = _load_settings_for_email(email)
+        password = ""
         try:
-            script = str(Path(__file__).resolve().parent / "collector.py")
-            args = [sys.executable, script]
-            if _run_status["mode"] in {"loop", "loop_resume"}:
-                args.append("--loop")
-            elif _run_status["mode"] == "light":
-                args.append("--light")
-
-            env = os.environ.copy()
-            # 一次 runner 固定使用启动时账号；账号设置注入为环境变量。
-            env["AM4_EMAIL"] = run_email
-            env["AM4_PASSWORD"] = run_password
-            env.update(panel_store.settings_to_env(run_settings))
-            env["PYTHONIOENCODING"] = "utf-8"
-            proc = subprocess.Popen(
-                args,
-                cwd=str(ROOT),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-            )
-            # 先安全登记 _run_proc（受锁保护），消除"刚启动即点停止"的竞态窗口
-            with _run_lock:
-                _run_proc = proc
-
-            # ---- 行读取：独立 reader 线程 + 带超时消费者，避免管道阻塞挂死 ----
-            line_q: queue.Queue = queue.Queue()
-
-            def _stdout_reader():
-                try:
-                    for raw in _run_proc.stdout:
-                        line_q.put(raw)
-                except Exception:
-                    pass
-                finally:
-                    line_q.put(None)  # EOF 哨兵
-
-            threading.Thread(target=_stdout_reader, daemon=True).start()
-
-            _mode = _run_status.get("mode", "")
-            idle_since = time.time()
-            sleep_deadline: float | None = None  # 脚本宣布睡眠后的到期时刻（看门狗）
-            _WORK_SILENCE = 15 * 60  # 运行中最大无输出时间
-            _SLEEP_GRACE = 15 * 60   # 睡眠到期后的宽限
-
-            def _watchdog_trip(reason: str):
-                """看门狗：强制终止卡死的采集进程。"""
-                _append_log(f"⏹ 看门狗：{reason}，已强制终止")
-                _broadcast_sse({"type": "log", "line": f"⏹ 看门狗：{reason}，已强制终止\n"})
-                _run_proc.terminate()
-                _run_status["error"] = f"看门狗超时（{reason}）"
-
-            while True:
-                try:
-                    raw = line_q.get(timeout=30)
-                except queue.Empty:
-                    if _run_proc.poll() is not None:
-                        break  # 进程已退出
-                    now = time.time()
-                    if _mode in {"loop", "loop_resume"}:
-                        if sleep_deadline is not None:
-                            # 睡眠中：超过宣布的醒来时刻 + 宽限仍未恢复 → 卡死
-                            if now > sleep_deadline:
-                                _watchdog_trip("睡眠到期后未恢复")
-                                break
-                        elif now - idle_since > _WORK_SILENCE:
-                            # 运行中：超过 15 分钟无输出 → 卡死
-                            _watchdog_trip("运行中超过 15 分钟无输出")
-                            break
-                    elif now - idle_since > 600:
-                        # 单次模式：10 分钟无输出 → 卡死
-                        _watchdog_trip("单次模式超过 10 分钟无输出")
+            for u in panel_store.list_users():
+                if normalize_account(u.get("am4_email") or "") == normalize_account(email):
+                    acct = panel_store.get_account(u["id"])
+                    if acct:
+                        password = acct.get("am4_password", "")
                         break
-                    continue
+        except Exception:
+            pass
+        if not password:
+            password = _current_env_credentials()[1]
+        targets.append((email, password, settings))
+    return targets
+
+
+def _start_loop(email: str, password: str, settings: dict, mode: str) -> tuple[bool, str]:
+    """为指定账号启动独立采集循环；全局限制并发数，普通启动轮换该账号日志。"""
+    key = account_key(email)
+    with _run_lock:
+        existing = _runs.get(key)
+        if existing and existing.get("running"):
+            return False, "该账号循环已在运行"
+        running_count = sum(1 for r in _runs.values() if r.get("running"))
+        if running_count >= MAX_CONCURRENT_LOOPS:
+            return False, f"并发循环已达上限（{MAX_CONCURRENT_LOOPS}）"
+        run = {
+            "account_email": email,
+            "account_key": key,
+            "password": password,
+            "settings": settings or {},
+            "mode": mode,
+            "running": True,
+            "last_run": None,
+            "error": None,
+            "progress_total": 0,
+            "progress_current": 0,
+            "proc": None,
+            "stop_requested": False,
+            "paths": _paths_for_account(email),
+        }
+        _runs[key] = run
+    try:
+        _load_pending_tasks(run["paths"]["pending"], key)
+    except Exception:
+        pass
+    if mode != "loop_resume":
+        _rotate_run_log(run["paths"]["log"])
+    _persist_active_loops()
+    _broadcast_sse({"type": "start", "mode": mode, "account": email})
+    threading.Thread(target=_runner, args=(run,), daemon=True).start()
+    return True, "ok"
+
+
+def _runner(run: dict) -> None:
+    """单个账号的采集子进程管理者：行读取 + 看门狗 + 日志/缓存/SSE。"""
+    email = run["account_email"]
+    key = run["account_key"]
+    run_paths = run["paths"]
+    # 线程级账号上下文：本线程内 _paths/_session_account/_task_owner_key 都归属该账号
+    _task_account_ctx.account = {
+        "email": email,
+        "password": run.get("password", ""),
+        "settings": run.get("settings") or {},
+    }
+    _task_account_ctx.paths = run_paths
+    seen_aircraft_ids: set[str] = set()
+    try:
+        script = str(Path(__file__).resolve().parent / "collector.py")
+        args = [sys.executable, script]
+        if run["mode"] in {"loop", "loop_resume"}:
+            args.append("--loop")
+        elif run["mode"] == "light":
+            args.append("--light")
+
+        env = os.environ.copy()
+        env["AM4_EMAIL"] = email
+        env["AM4_PASSWORD"] = run.get("password", "")
+        env.update(panel_store.settings_to_env(run.get("settings") or {}))
+        env["PYTHONIOENCODING"] = "utf-8"
+        proc = subprocess.Popen(
+            args,
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+        )
+        # 先安全登记 proc（受锁保护），消除"刚启动即点停止"的竞态窗口
+        with _run_lock:
+            run["proc"] = proc
+
+        # ---- 行读取：独立 reader 线程 + 带超时消费者，避免管道阻塞挂死 ----
+        line_q: queue.Queue = queue.Queue()
+
+        def _stdout_reader():
+            try:
+                for raw in proc.stdout:
+                    line_q.put(raw)
+            except Exception:
+                pass
+            finally:
+                line_q.put(None)  # EOF 哨兵
+
+        threading.Thread(target=_stdout_reader, daemon=True).start()
+
+        _mode = run.get("mode", "")
+        idle_since = time.time()
+        sleep_deadline: float | None = None  # 脚本宣布睡眠后的到期时刻（看门狗）
+        _WORK_SILENCE = 15 * 60  # 运行中最大无输出时间
+        _SLEEP_GRACE = 15 * 60   # 睡眠到期后的宽限
+
+        def _watchdog_trip(reason: str):
+            """看门狗：强制终止卡死的采集进程。"""
+            _append_log(f"⏹ 看门狗：{reason}，已强制终止")
+            _broadcast_sse({"type": "log", "line": f"⏹ 看门狗：{reason}，已强制终止\n",
+                            "account": email})
+            proc.terminate()
+            run["error"] = f"看门狗超时（{reason}）"
+
+        while True:
+            try:
+                raw = line_q.get(timeout=30)
+            except queue.Empty:
+                if proc.poll() is not None:
+                    break  # 进程已退出
+                now = time.time()
+                if _mode in {"loop", "loop_resume"}:
+                    if sleep_deadline is not None:
+                        if now > sleep_deadline:
+                            _watchdog_trip("睡眠到期后未恢复")
+                            break
+                    elif now - idle_since > _WORK_SILENCE:
+                        _watchdog_trip("运行中超过 15 分钟无输出")
+                        break
+                elif now - idle_since > 600:
+                    _watchdog_trip("单次模式超过 10 分钟无输出")
+                    break
+                continue
 
                 if raw is None:
                     break  # EOF
@@ -3703,11 +3918,6 @@ def api_run():
                         sleep_deadline = time.time() + secs + _SLEEP_GRACE
                     except ValueError:
                         pass
-                    configured_email = _current_env_credentials()[0]
-                    if normalize_account(configured_email) != normalize_account(run_email):
-                        _append_log("🔄 检测到账号配置变化：当前轮次已完成，停止旧账号循环并安全切换")
-                        _run_proc.terminate()
-                        break
                     continue
 
                 # ⭐ 脚本直接输出市场 JSON 行: __MARKET__{json} → 写盘+更新缓存+推送 market-bar
@@ -3715,16 +3925,16 @@ def api_run():
                     try:
                         mkt = json.loads(line[len("__MARKET__"):].strip())
                         with _market_rt_lock:
-                            if _market_rt_cache is None:
-                                _market_rt_cache = {}
-                            _market_rt_cache.update(mkt)
-                            _market_rt_ts = time.time()
+                            cache = dict(_market_rt_cache.get(key) or {})
+                            cache.update(mkt)
+                            _market_rt_cache[key] = cache
+                            _market_rt_ts[key] = time.time()
                         _market_retry_success()
                         try:
                             run_paths["market"].write_text(json.dumps(mkt, ensure_ascii=False, indent=2), encoding="utf-8")
                         except Exception:
                             pass
-                        _broadcast_sse({"type": "market", "data": mkt})
+                        _broadcast_sse({"type": "market", "data": mkt, "account": email})
                         continue
                     except Exception:
                         pass
@@ -3734,8 +3944,8 @@ def api_run():
                     try:
                         maint = json.loads(line[len("__MAINT__"):].strip())
                         with _maint_cache_lock:
-                            _maint_cache = maint
-                        _broadcast_sse({"type": "maint", "data": maint})
+                            _maint_cache[key] = maint
+                        _broadcast_sse({"type": "maint", "data": maint, "account": email})
                         continue  # 不下游当普通日志
                     except Exception:
                         pass
@@ -3746,9 +3956,9 @@ def api_run():
                         status_map = json.loads(line[len("__STATUS__"):].strip())
                         if isinstance(status_map, dict) and status_map:
                             with _maint_cache_lock:
-                                _home_status_cache = status_map
-                                _home_status_ts = time.time()
-                            _broadcast_operation_statuses(status_map)
+                                _home_status_cache[key] = status_map
+                                _home_status_ts[key] = time.time()
+                            _broadcast_operation_statuses(status_map, email)
                         continue
                     except Exception:
                         pass
@@ -3757,7 +3967,7 @@ def api_run():
                 if line.startswith("__HUBS__"):
                     try:
                         hubs = json.loads(line[len("__HUBS__"):].strip())
-                        _broadcast_sse({"type": "hubs", "data": hubs})
+                        _broadcast_sse({"type": "hubs", "data": hubs, "account": email})
                         continue
                     except Exception:
                         pass
@@ -3831,7 +4041,8 @@ def api_run():
                     try:
                         removed = json.loads(line[len("__FLEET_REMOVE__"):])
                         _cancel_removed_aircraft_tasks(removed)
-                        _broadcast_sse({"type": "fleet_remove", "data": removed})
+                        _broadcast_sse({"type": "fleet_remove", "data": removed,
+                                        "account": email})
                         continue
                     except Exception:
                         pass
@@ -3841,7 +4052,7 @@ def api_run():
                     try:
                         ac = json.loads(line[len("__AIRCRAFT__"):])
                         with _maint_cache_lock:
-                            live_statuses = dict(_home_status_cache or {})
+                            live_statuses = dict(_home_status_cache.get(key) or {})
                         ac_status = live_statuses.get(str(ac.get("飞机ID", "")), {})
                         if not ac_status:
                             target_reg = str(ac.get("注册号", "")).strip().upper()
@@ -3853,17 +4064,18 @@ def api_run():
                         if ac_key:
                             seen_aircraft_ids.add(ac_key)
                         current = len(seen_aircraft_ids)
-                        _run_status["progress_current"] = current
-                        if not _run_status["progress_total"]:
-                            _run_status["progress_total"] = current
-                        elif current > _run_status["progress_total"]:
+                        run["progress_current"] = current
+                        if not run["progress_total"]:
+                            run["progress_total"] = current
+                        elif current > run["progress_total"]:
                             # 实际采集量可能超过页面预估值（如机型分组统计偏差），以实际为准
-                            _run_status["progress_total"] = current
+                            run["progress_total"] = current
                         _broadcast_sse({
                             "type": "aircraft",
                             "data": ac,
                             "count": current,
-                            "total": _run_status["progress_total"],
+                            "total": run["progress_total"],
+                            "account": email,
                         })
                         continue  # 不下游当普通日志显示
                     except Exception:
@@ -3872,22 +4084,24 @@ def api_run():
                 # 普通文本日志直接显示；解析失败的数据行只给简短提示，避免长 JSON 刷屏
                 if not is_data_line:
                     _append_log(line)
-                    _broadcast_sse({"type": "log", "line": line})
+                    _broadcast_sse({"type": "log", "line": line, "account": email})
                 else:
                     tag = line.split("{", 1)[0].strip("_").strip()
                     _append_log(f"⚠ 数据行解析失败: {tag}")
-                    _broadcast_sse({"type": "log", "line": f"⚠ 数据行解析失败: {tag}"})
+                    _broadcast_sse({"type": "log", "line": f"⚠ 数据行解析失败: {tag}",
+                                    "account": email})
 
                 # 解析进度行（备用）
                 m = _AIR_DETAIL_RE.search(line)
                 if m:
                     total = int(m.group(2))
-                    _run_status["progress_total"] = total
+                    run["progress_total"] = total
 
                     _broadcast_sse({
                         "type": "progress",
-                        "current": _run_status.get("progress_current", 0),
+                        "current": run.get("progress_current", 0),
                         "total": total,
+                        "account": email,
                     })
 
             # 进程结束后清空残余行（防日志丢失；同样跳过数据行噪声）
@@ -3909,53 +4123,61 @@ def api_run():
                         or line.startswith("__TAKEOVER_TAKEOFF__")
                     ):
                         _append_log(line)
-                        _broadcast_sse({"type": "log", "line": line})
+                        _broadcast_sse({"type": "log", "line": line, "account": email})
             except queue.Empty:
                 pass
 
-            _run_proc.wait()
-            if (not _stop_requested and not _run_status["error"]
-                    and _run_proc.returncode not in (0, -15)):
-                _run_status["error"] = f"脚本退出码: {_run_proc.returncode}"
-        except Exception as e:
-            _run_status["error"] = str(e)
-        finally:
-            # 完成事件发出前保持 running=True；账号切换会等到旧账号结果全部收尾。
-            with _run_lock:
-                _run_status["mode"] = ""
-                _run_status["last_run"] = _now_bjt().strftime("%Y-%m-%d %H:%M:%S")
-                _run_proc = None
-                fleet = _read_csv(run_paths["fleet"])
-                maint = _read_csv(run_paths["maint"])
-                _broadcast_sse({
-                    "type": "done",
-                    "error": _run_status["error"],
-                    "last_run": _run_status["last_run"],
-                    "fleet_count": len(fleet),
-                    "maint_count": len(maint),
-                    "refresh": True,
-                })
-                _run_status["running"] = False
-            _sync_account_context()
-            _ensure_marketing_tasks()
-
-    threading.Thread(target=_runner, daemon=True).start()
-    return jsonify({"ok": True, "msg": "脚本已启动"})
+            proc.wait()
+            if (not run.get("stop_requested") and not run["error"]
+                    and proc.returncode not in (0, -15)):
+                run["error"] = f"脚本退出码: {proc.returncode}"
+    except Exception as e:
+        run["error"] = str(e)
+    finally:
+        _task_account_ctx.paths = None
+        _task_account_ctx.account = None
+        with _run_lock:
+            run["mode"] = ""
+            run["last_run"] = _now_bjt().strftime("%Y-%m-%d %H:%M:%S")
+            run["proc"] = None
+            fleet = _read_csv(run_paths["fleet"])
+            maint = _read_csv(run_paths["maint"])
+            _broadcast_sse({
+                "type": "done",
+                "error": run["error"],
+                "last_run": run["last_run"],
+                "fleet_count": len(fleet),
+                "maint_count": len(maint),
+                "refresh": True,
+                "account": email,
+            })
+            run["running"] = False
+        _persist_active_loops()
+        _ensure_marketing_tasks()
 
 
 @app.route("/api/stop", methods=["POST"])
 def api_stop():
     _require_csrf()
-    global _run_status, _run_proc, _stop_requested
+    # 停止当前登录账号（或模拟账号）的循环；服务令牌停止循环归属账号
+    if request.headers.get("X-Service-Token", "") == _service_token:
+        target_email = _active_credentials()[0]
+    else:
+        target_email = _session_account().get("email", "")
+    if not target_email:
+        return jsonify({"ok": False, "msg": "没有可停止的循环"}), 404
+    key = account_key(target_email)
     with _run_lock:
-        if not _run_status["running"]:
-            return jsonify({"ok": False, "msg": "没有正在运行的任务"})
-        if _run_proc and _run_proc.poll() is None:
-            _stop_requested = True
-            _run_proc.terminate()
+        run = _runs.get(key)
+        if not run or not run.get("running"):
+            return jsonify({"ok": False, "msg": "该账号没有正在运行的循环"}), 404
+        proc = run.get("proc")
+        if proc and proc.poll() is None:
+            run["stop_requested"] = True
+            proc.terminate()
             msg = "⏹ 用户手动停止\n"
-            _append_log(msg)
-            _broadcast_sse({"type": "log", "line": msg})
+            _append_log(msg, paths=run.get("paths"))
+            _broadcast_sse({"type": "log", "line": msg, "account": target_email})
     return jsonify({"ok": True, "msg": "已发送停止信号"})
 
 
