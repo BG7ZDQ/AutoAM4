@@ -264,10 +264,13 @@ def _login_payload(email: str, password: str) -> str:
 
 
 def classify_takeoff_response(response: str) -> str:
-    """分类起飞接口响应：accepted / not_ready / rejected / unknown。"""
+    """分类起飞接口响应：accepted / no_fuel / not_ready / rejected / unknown。"""
     body = (response or "").strip()
     if not body:
         return "unknown"
+    if re.search(r"燃油不足|沒有足夠燃油|不够燃油|沒有燃油|沒有油|燃油耗尽|"
+                 r"not enough fuel|insufficient fuel|no fuel", body, re.I):
+        return "no_fuel"
     if re.search(r"不能起飛|沒有航線剩下出發|不能起飞|没有航线剩下出发", body):
         return "not_ready"
     if re.search(r"(?:name=['\"]lEmail|weblogin/login\.php|loginForm)", body, re.I):

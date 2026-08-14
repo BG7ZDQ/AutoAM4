@@ -758,21 +758,20 @@ def _refresh_market_after_spend() -> None:
         _append_log(f"⚠ 扣款成功，但余额即时刷新失败：{exc}")
 
 
-def _refresh_market_rt_worker():
+def _refresh_market_rt_worker(email: str = "", password: str = "",
+                              settings: dict | None = None) -> None:
     """后台刷新市场数据：复用采集脚本的登录/抓取/解析逻辑。
 
     使用服务端 Cookie 会话（am4_cookiejar_worker.txt），与采集子进程隔离；
     与航线/待办在线操作通过统一锁串行，登录态过期由 _ensure_login 自动重登。
+    账号由调用方在请求上下文内捕获后传入（线程内没有 session）。
     """
-    """
+    # 线程级账号上下文：缓存键/重试计数/日志路径都归属该账号
+    _task_account_ctx.account = {"email": email, "password": password,
+                                 "settings": settings or {}}
+    _task_account_ctx.paths = _paths_for_account(email) if email else None
     try:
-        _append_log("[market-worker] 开始抓取余额")
-    except Exception:
-        pass
-    """
-    try:
-        acct = _session_account()
-        env_email, env_password = acct.get("email", ""), acct.get("password", "")
+        env_email, env_password = email, password
         if not env_email or not env_password:
             delay = _market_retry_failure(".env 缺少凭据")
             _append_log(f"[market-worker] .env 缺少凭据，{delay} 秒后重试")
@@ -818,6 +817,9 @@ def _refresh_market_rt_worker():
             _append_log(f"[market-worker] {reason}，保留旧数据，{delay} 秒后重试")
         except Exception:
             pass
+    finally:
+        _task_account_ctx.account = None
+        _task_account_ctx.paths = None
 
 # ===== 日志持久化 =====
 
@@ -920,7 +922,8 @@ def _load_pending_tasks(path: Path | None = None, owner: str | None = None) -> N
                                   and t.get("status") == "failed")
                               or (t.get("kind") == "takeoff"
                                   and t.get("status") == "failed"
-                                  and _is_recoverable_network_error(t.get("error"))))]
+                                  and (_is_recoverable_network_error(t.get("error"))
+                                       or "账号未绑定" in str(t.get("error") or ""))))]
         fixed = False
         owned_tasks = []
         expected_owner = str(owner or _active_account_key)
@@ -944,6 +947,15 @@ def _load_pending_tasks(path: Path | None = None, owner: str | None = None) -> N
                 t["trigger_at"] = recovery_base + recovered_network * 30
                 t["error"] = "网络恢复后等待重新确认"
                 t["retry"] = {"category": "network_recovery", "attempts": 0}
+                recovered_network += 1
+                fixed = True
+            elif (t.get("status") == "failed" and t.get("kind") == "takeoff"
+                  and "账号未绑定" in str(t.get("error") or "")):
+                # 账号绑定晚于任务创建：恢复为待执行，稍后重新评估
+                t["status"] = "pending"
+                t["trigger_at"] = time.time() + 1800 + recovered_network * 30
+                t["error"] = "账号已就绪，等待重新评估"
+                t.pop("retry", None)
                 recovered_network += 1
                 fixed = True
             owned_tasks.append(t)
@@ -1489,8 +1501,14 @@ def _retrofit_blocks_takeoff(reg: str) -> str | None:
     return None
 
 
+def _next_whole_hour_bjt() -> datetime:
+    """下一个北京时间整点（用于长退避，避免一次退到次日）。"""
+    now = _now_bjt()
+    return (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+
+
 def _defer_online_failure(task: dict, category: str, message: str) -> bool:
-    """有限指数退避；运营任务交给每日发现，建设任务保留低频恢复。"""
+    """有限指数退避；运营任务退让到下个整点，建设任务保留低频恢复。"""
     state = task.setdefault("retry", {})
     if state.get("category") != category:
         state.clear()
@@ -1507,10 +1525,13 @@ def _defer_online_failure(task: dict, category: str, message: str) -> bool:
             task["error"] = f"{message}\n连续失败 {attempts} 次，改为每 6 小时重试"
             _publish_log(f"⏳ {_pending_log_label(task)}\n   {task['error']}")
             return True
-        task["status"] = "done"
-        task["error"] = f"{message}\n连续失败 {attempts} 次，暂停至每日 06:00 重新评估"
-        _publish_log(f"⏸️ {_pending_log_label(task)}\n   {task['error']}")
-        return False
+        nxt = _next_whole_hour_bjt()
+        task["trigger_at"] = nxt.timestamp()
+        task["status"] = "pending"
+        task["error"] = (f"{message}\n连续失败 {attempts} 次，"
+                         f"下个整点（{nxt.strftime('%H:%M')}）重试")
+        _publish_log(f"⏳ {_pending_log_label(task)}\n   {task['error']}")
+        return True
     delay = delays[attempts - 1]
     task["trigger_at"] = time.time() + delay
     task["status"] = "pending"
@@ -1988,6 +2009,11 @@ def _run_pending_task(task: dict) -> None:
         if _removed_aircraft_guard(task):
             return
         if response_state != "accepted":
+            if response_state == "no_fuel":
+                # 燃油耗尽：熔断本账号其余起飞，等下一市场轮次补货后再试
+                _mark_fuel_exhausted()
+                _defer_for_market(task, "燃油不足，等待补货后重试")
+                return
             response_label = {
                 "not_ready": "游戏暂不允许起飞（not_ready）",
                 "rejected": "游戏拒绝起飞（rejected）",
@@ -2090,8 +2116,10 @@ def _pending_scheduler_loop() -> None:
                     t["status"] = "running"
                 ctx = _account_ctx_for_key(owner_key)
                 if ctx is None or not ctx.get("email"):
-                    t["status"] = "failed"
-                    t["error"] = "账号未绑定，无法执行"
+                    # 账号可能尚未绑定/数据未就绪：延迟重试而非永久失败
+                    t["status"] = "pending"
+                    t["trigger_at"] = time.time() + 1800 + random.uniform(0, 300)
+                    t["error"] = "账号未绑定，30 分钟后重试"
                     _save_pending_tasks(owner=owner_key)
                     continue
                 # 任务归属账号上下文：在线操作使用该账号凭据与 Cookie
@@ -2744,7 +2772,20 @@ def _repair_legacy_doubled_takeoffs(tasks: list[dict], fleet: list[dict]) -> int
 
 
 def _current_fuel_lbs() -> float | None:
-    """当前燃油（Lbs）；文件/字段无效返回 None，真实零库存仍返回 0。"""
+    """当前燃油（Lbs）；优先实时缓存（更新及时，含燃油耗尽熔断），
+    再读磁盘快照；字段无效返回 None，真实零库存仍返回 0。"""
+    try:
+        rt = _market_rt_cache.get(_session_cache_key())
+    except Exception:
+        rt = None
+    if rt is not None:
+        raw = str(rt.get("fuel_qty", "")).replace(",", "").strip()
+        if raw:
+            try:
+                value = float(raw)
+                return value if value >= 0 else None
+            except (TypeError, ValueError):
+                pass
     try:
         m = json.loads(_paths()["market"].read_text(encoding="utf-8"))
         raw = str(m.get("fuel_qty", "")).replace(",", "").strip()
@@ -2754,6 +2795,24 @@ def _current_fuel_lbs() -> float | None:
         return value if value >= 0 else None
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return None
+
+
+def _mark_fuel_exhausted() -> None:
+    """游戏判定燃油不足：把本账号实时燃油缓存置 0，
+    使后续起飞待办走燃油闸门等待补货，避免重复请求。"""
+    try:
+        key = _session_cache_key()
+        with _market_rt_lock:
+            cache = dict(_market_rt_cache.get(key) or {})
+            cache["fuel_qty"] = "0"
+            cache["updated_at"] = _now_bjt().strftime("%Y-%m-%d %H:%M:%S")
+            _market_rt_cache[key] = cache
+            _market_rt_ts[key] = time.time()
+        _broadcast_sse({"type": "market", "data": cache,
+                        "account": _session_account().get("email", "")})
+        _append_log("⛽ 检测到燃油不足，已熔断起飞请求，等待补货")
+    except Exception:
+        pass
 
 
 def _current_balance() -> float | None:
@@ -3717,7 +3776,12 @@ def api_market():
     if need_fetch:
         # 去重锁：同一时刻只有一个 market worker，避免 Cookie 失效时并发 curl
         if _market_rt_worker_lock.acquire(blocking=False):
-            threading.Thread(target=_refresh_market_rt_worker_locked, daemon=True).start()
+            _acct = _session_account()
+            threading.Thread(
+                target=_refresh_market_rt_worker_locked,
+                args=(_acct.get("email", ""), _acct.get("password", ""),
+                      _acct.get("settings") or {}),
+                daemon=True).start()
         data["refreshing"] = True
     else:
         data["refreshing"] = False
@@ -3735,11 +3799,12 @@ def api_market():
     return jsonify(data)
 
 
-def _refresh_market_rt_worker_locked():
+def _refresh_market_rt_worker_locked(email: str = "", password: str = "",
+                                     settings: dict | None = None):
     """市场去重并串行占用在线会话，避免与航线/待办竞争 Cookie。"""
     try:
         with _online_session_lock:
-            _refresh_market_rt_worker()
+            _refresh_market_rt_worker(email, password, settings)
     finally:
         _market_rt_worker_lock.release()
 

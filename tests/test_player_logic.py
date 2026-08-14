@@ -634,6 +634,12 @@ class SecurityAndPersistenceTests(unittest.TestCase):
             "unknown",
         )
         self.assertEqual(
+            collector.classify_takeoff_response("不能起飛：燃油不足"), "no_fuel")
+        self.assertEqual(
+            collector.classify_takeoff_response("沒有足夠燃油"), "no_fuel")
+        self.assertEqual(
+            collector.classify_takeoff_response("Not enough fuel"), "no_fuel")
+        self.assertEqual(
             collector.classify_takeoff_response("沒有航線剩下出發"),
             "not_ready",
         )
@@ -641,6 +647,15 @@ class SecurityAndPersistenceTests(unittest.TestCase):
             collector.classify_takeoff_response("toast('x','denied','error')"),
             "rejected",
         )
+
+    def test_fuel_exhaustion_circuit_breaker(self):
+        server._market_rt_cache[server._active_account_key] = {"fuel_qty": "500000"}
+        with patch.object(server, "_broadcast_sse"), \
+             patch.object(server, "_append_log"):
+            server._mark_fuel_exhausted()
+        self.assertEqual(
+            server._market_rt_cache[server._active_account_key]["fuel_qty"], "0")
+        self.assertEqual(server._current_fuel_lbs(), 0.0)
 
     def test_incremental_aircraft_updates_in_place_and_keeps_operation_state(self):
         template = (ROOT / "src" / "templates" / "index.html").read_text(encoding="utf-8")
@@ -1314,8 +1329,10 @@ class ServerSchedulingTests(unittest.TestCase):
         with patch.object(server, "_publish_log"):
             for _ in range(4):
                 server._defer_online_failure(task, "detail", "详情失败")
-        self.assertEqual(task["status"], "done")
+        self.assertEqual(task["status"], "pending")
         self.assertIn("连续失败 4 次", task["error"])
+        self.assertIn("下个整点", task["error"])
+        self.assertGreater(task["trigger_at"], time.time())
 
     def test_construction_failures_keep_low_frequency_recovery(self):
         task = {"kind": "delivery_continue", "status": "running", "title": "SAFE-1 续建"}
