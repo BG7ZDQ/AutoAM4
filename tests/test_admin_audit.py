@@ -52,6 +52,25 @@ class AdminAuditTests(unittest.TestCase):
                 headers={"X-CSRF-Token": server._csrf_token})
         self.assertEqual(resp.status_code, 403)
 
+    def test_audit_endpoint_requires_admin(self):
+        with patch.object(server, "_is_admin_request", return_value=False), \
+             server.app.test_client() as client:
+            resp = client.get("/api/admin/audit")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_audit_endpoint_returns_recent_lines(self):
+        tmp = Path(tempfile.mkdtemp()) / "audit.log"
+        tmp.write_text("a\nb\nc\n", encoding="utf-8")
+        with patch.object(server, "_AUDIT_LOG", tmp), \
+             patch.object(server, "_is_admin_request", return_value=True), \
+             server.app.test_client() as client:
+            resp = client.get("/api/admin/audit")
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.get_json()
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(payload["lines"], ["a", "b", "c"])
+
     def test_denied_page_shows_current_username(self):
         uid = panel_store.create_user(
             "viewer1", "viewer-pass-1", am4_email="viewer1@example.com",

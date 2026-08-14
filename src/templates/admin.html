@@ -55,6 +55,16 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
   <h3>用户与账号</h3>
   <div id="ub" class="user-cards"></div>
 </div>
+<div class="card">
+  <h3>管理日志</h3>
+  <div style="display:flex;gap:10px;margin:8px 0">
+    <button class="btn-ghost" onclick="loadAudit()">刷新</button>
+    <span id="auditInfo" style="font-size:.8rem;color:var(--t3);align-self:center"></span>
+  </div>
+  <pre id="auditLog" style="max-height:360px;overflow:auto;background:#f8fafc;
+    border:1px solid var(--brd);border-radius:8px;padding:10px;font-size:.78rem;
+    line-height:1.5;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
+</div>
 <div id="pwdModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center">
   <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:20px;width:min(92vw,380px)">
     <h3 style="margin-bottom:12px">🔑 重置用户密码</h3>
@@ -169,6 +179,16 @@ function toggleOps(btn){
   var card=btn.closest('.user-card'), ops=card?card.querySelector('.u-ops'):null;
   if(ops)ops.classList.toggle('open');
 }
+function loadAudit(){
+  const pre=document.getElementById('auditLog');
+  const info=document.getElementById('auditInfo');
+  api('/api/admin/audit').then(d=>{
+    if(!d.ok){ pre.textContent='加载失败'; info.textContent=''; return; }
+    info.textContent='最近 '+d.lines.length+' 条 / 共 '+d.total+' 条';
+    pre.textContent=(d.lines||[]).join('\n')||'暂无管理日志';
+    pre.scrollTop=pre.scrollHeight;
+  }).catch(()=>{ pre.textContent='加载失败'; info.textContent=''; });
+}
 function startAll(){
   api('/api/admin/loops/start',{method:'POST'}).then(d=>{
     alert(d.msg||'已提交');
@@ -192,6 +212,7 @@ function logout(){
 }
 loadUsers();
 loadRuns();
+loadAudit();
 setInterval(loadRuns,30000);
 </script>
 </body>

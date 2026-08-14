@@ -819,6 +819,21 @@ def api_admin_user_password(uid: int):
     return jsonify({"ok": True, "msg": "密码已重置"})
 
 
+@app.route("/api/admin/audit")
+def api_admin_audit():
+    """管理员审计日志：返回最近 200 条与总数（只读，管理员专属）。"""
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    lines: list[str] = []
+    try:
+        if _AUDIT_LOG.exists():
+            lines = _AUDIT_LOG.read_text(
+                encoding="utf-8", errors="replace").splitlines()
+    except Exception:
+        pass
+    return jsonify({"ok": True, "total": len(lines), "lines": lines[-200:]})
+
+
 @app.route("/api/admin/users/<int:uid>", methods=["DELETE"])
 def api_admin_delete_user(uid: int):
     _require_csrf()
