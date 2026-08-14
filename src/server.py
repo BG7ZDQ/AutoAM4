@@ -2598,6 +2598,13 @@ def _pending_scheduler_loop() -> None:
                     t["error"] = "账号受保护（AM4_PROTECTED_ACCOUNTS），已跳过自动化"
                     _save_pending_tasks(owner=owner_key)
                     continue
+                if _account_manually_stopped(ctx.get("email", "")):
+                    # 用户手动停止循环：该账号待办同步暂停，启动循环后自动恢复
+                    t["status"] = "pending"
+                    t["trigger_at"] = time.time() + 1800
+                    t["error"] = "循环已停止，待办暂停；启动循环后恢复"
+                    _save_pending_tasks(owner=owner_key)
+                    continue
                 # 任务归属账号上下文：在线操作使用该账号凭据与 Cookie
                 _task_account_ctx.account = ctx
                 _task_account_ctx.paths = _paths_for_account(ctx["email"])
@@ -4418,6 +4425,37 @@ def _persist_active_loops() -> None:
         pass
 
 
+_STOPPED_FILE = ROOT / "data" / "stopped_accounts.json"
+_stopped_accounts: set[str] = set()
+_stopped_lock = threading.Lock()
+
+
+def _load_stopped_accounts() -> None:
+    """读取用户手动停止的账号名单；停止期间其待办调度保持暂停。"""
+    global _stopped_accounts
+    try:
+        if _STOPPED_FILE.exists():
+            data = json.loads(_STOPPED_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                _stopped_accounts = {normalize_account(e) for e in data if e}
+    except Exception:
+        pass
+
+
+def _persist_stopped_accounts() -> None:
+    try:
+        _STOPPED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _STOPPED_FILE.write_text(
+            json.dumps(sorted(_stopped_accounts), ensure_ascii=False),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _account_manually_stopped(email: str) -> bool:
+    return bool(email) and normalize_account(email) in _stopped_accounts
+
+
 def _resume_loop_targets() -> list[tuple[str, str, dict]]:
     """读取上次运行中的账号，逐个解析凭据与设置用于续接。"""
     targets = []
@@ -4489,6 +4527,9 @@ def _start_loop(email: str, password: str, settings: dict, mode: str) -> tuple[b
         pass
     if mode != "loop_resume":
         _rotate_run_log(run["paths"]["log"])
+    with _stopped_lock:
+        _stopped_accounts.discard(normalize_account(email))
+    _persist_stopped_accounts()
     _persist_active_loops()
     _broadcast_sse({"type": "start", "mode": mode, "account": email})
     threading.Thread(target=_runner, args=(run,), daemon=True).start()
@@ -4879,6 +4920,9 @@ def api_stop():
         # 立即反映停止状态，避免前端在 _runner 收尾前仍看到“运行中”
         run["running"] = False
         run["mode"] = ""
+    with _stopped_lock:
+        _stopped_accounts.add(normalize_account(target_email))
+    _persist_stopped_accounts()
     _persist_active_loops()
     return jsonify({"ok": True, "msg": "已停止"})
 
@@ -4887,6 +4931,7 @@ def api_stop():
 _rotate_audit_log()
 _cleanup_old_logs()
 _load_pending_tasks()
+_load_stopped_accounts()
 _loop_account_settings = _load_settings_for_email(_active_credentials()[0])
 _bootstrap_admin_from_env()
 if os.environ.get("AM4_DISABLE_SCHEDULER", "").strip() != "1":

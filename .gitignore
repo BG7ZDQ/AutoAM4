@@ -12,6 +12,7 @@ outputs/
 src/outputs/
 data/panel.db
 data/active_loops.json
+data/stopped_accounts.json
 data/admin_audit*.log*
 *.log
 *.log.*

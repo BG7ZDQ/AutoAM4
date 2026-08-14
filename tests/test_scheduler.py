@@ -1288,8 +1288,25 @@ class ServerSchedulingTests(unittest.TestCase):
             self.assertEqual(server._runs[key]["mode"], "")
             proc.terminate.assert_called_once()
             persist.assert_called_once()
+            # 停止即暂停该账号待办；重新启动循环后自动恢复
+            self.assertIn(
+                server.normalize_account("stop@example.com"),
+                server._stopped_accounts)
+            with patch.object(server, "_rotate_run_log"), \
+                 patch.object(server, "_broadcast_sse"), \
+                 patch.object(server, "_append_log"), \
+                 patch.object(server, "_persist_active_loops"), \
+                 patch.object(server.threading, "Thread"):
+                ok, _ = server._start_loop(
+                    "stop@example.com", "p", {}, "loop")
+            self.assertTrue(ok)
+            self.assertNotIn(
+                server.normalize_account("stop@example.com"),
+                server._stopped_accounts)
         finally:
             server._runs.pop(key, None)
+            server._stopped_accounts.discard(
+                server.normalize_account("stop@example.com"))
 
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
