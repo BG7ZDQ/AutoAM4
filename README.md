@@ -135,7 +135,17 @@ python src/collector.py --loop --interval 1800
 
 ## 生产部署
 
-仓库提供了参考配置：
+### 一键安装（推荐）
+
+在 Ubuntu / Debian 服务器上以 root 运行：
+
+```bash
+sudo bash deploy/install.sh
+```
+
+脚本会交互询问安装目录、服务用户、域名、HTTPS 方式（Let's Encrypt / 自签名 / 仅 HTTP）、游戏账号（可选）与管理员账号（可选），随后自动生成 `.env`、初始化令牌、会话密钥与服务令牌，创建虚拟环境并安装依赖，写入 Nginx 反向代理配置并签发/生成证书，注册 `am4.service` 并开机自启。安装完成后按提示通过 `/setup`（初始化令牌在服务器 `.env` 中）或已自动创建的管理员登录。
+
+仓库同时保留了供手动部署的参考配置：
 
 - [deploy/am4.service](deploy/am4.service)：单进程 Gunicorn + 自动启动循环
 - [deploy/nginx-am4.conf](deploy/nginx-am4.conf)：Nginx 反向代理与 HTTPS
