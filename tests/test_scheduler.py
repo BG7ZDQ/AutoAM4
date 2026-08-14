@@ -1090,6 +1090,35 @@ class ServerSchedulingTests(unittest.TestCase):
         finally:
             server._runs.clear()
 
+    def test_protected_account_helpers(self):
+        with patch.dict(os.environ,
+                        {"AM4_PROTECTED_ACCOUNTS": "bg7zdq@satellites.ac.cn"}):
+            server.PROTECTED_ACCOUNTS = {
+                server.normalize_account(x)
+                for x in os.environ.get("AM4_PROTECTED_ACCOUNTS", "").split(",")
+                if x.strip()
+            }
+            try:
+                self.assertTrue(
+                    server._account_protected("bg7zdq@satellites.ac.cn"))
+                self.assertFalse(
+                    server._account_protected("other@example.com"))
+            finally:
+                server.PROTECTED_ACCOUNTS = set()
+
+    def test_protected_account_rejected_for_loop(self):
+        server.PROTECTED_ACCOUNTS = {
+            server.normalize_account("bg7zdq@satellites.ac.cn")}
+        try:
+            ok, msg = server._start_loop(
+                "bg7zdq@satellites.ac.cn", "pw", {}, "loop")
+            self.assertFalse(ok)
+            self.assertIn("受保护", msg)
+            self.assertNotIn("bg7zdq_satellites_ac_cn_48d93926b2fc",
+                             server._runs)
+        finally:
+            server.PROTECTED_ACCOUNTS = set()
+
     def test_env_admin_bootstrap_creates_admin_when_missing(self):
         with patch.object(panel_store, "admin_exists", return_value=False), \
              patch.object(panel_store, "create_user") as create, \

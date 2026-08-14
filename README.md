@@ -92,6 +92,7 @@ python src/server.py
 | `AM4_PANEL_DB` | `data/panel.db` | 面板账号库路径 |
 | `AM4_COOKIE_SECURE` | `0` | HTTPS 部署时置 1（会话 Cookie 仅走 HTTPS，并附加 HSTS） |
 | `AM4_ADMIN_USERNAME` / `AM4_ADMIN_PASSWORD` | — | 首次启动自动创建管理员（纯管理身份） |
+| `AM4_PROTECTED_ACCOUNTS` | — | 受保护账号（逗号分隔）：待办执行/启动循环/市场抓取一律跳过，防止与线上实例双开同一账号 |
 
 可用 `AM4_PORT` 修改本地端口。开发或只读检查时可设置 `AM4_DISABLE_SCHEDULER=1`，阻止后台待办执行。
 

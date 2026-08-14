@@ -112,6 +112,18 @@ _loop_owner_pinned = False
 # 循环账号的操作开关（自动营销/买油/CO₂/起飞），供服务端待办调度读取
 _loop_account_settings: dict = {}
 
+# 受保护账号（AM4_PROTECTED_ACCOUNTS，逗号分隔）：本地/任何实例一律拒绝自动化，
+# 防止与线上正在运营的账号重复操作（双开事故）。
+PROTECTED_ACCOUNTS = {
+    normalize_account(x)
+    for x in os.environ.get("AM4_PROTECTED_ACCOUNTS", "").split(",")
+    if x.strip()
+}
+
+
+def _account_protected(email: str) -> bool:
+    return bool(email and normalize_account(email) in PROTECTED_ACCOUNTS)
+
 
 def _active_credentials() -> tuple[str, str]:
     with _account_lock:
@@ -867,6 +879,9 @@ def _refresh_market_rt_worker(email: str = "", password: str = "",
         if not env_email or not env_password:
             delay = _market_retry_failure(".env 缺少凭据")
             _append_log(f"[market-worker] .env 缺少凭据，{delay} 秒后重试")
+            return
+        if _account_protected(env_email):
+            _append_log(f"[market-worker] {env_email} 受保护，跳过市场抓取")
             return
         import collector as ext
         # 服务端会话：按账号隔离，与采集子进程分离，与航线/待办通过在线会话锁串行。
@@ -2240,6 +2255,13 @@ def _pending_scheduler_loop() -> None:
                     t["status"] = "pending"
                     t["trigger_at"] = time.time() + 1800 + random.uniform(0, 300)
                     t["error"] = "账号未绑定，30 分钟后重试"
+                    _save_pending_tasks(owner=owner_key)
+                    continue
+                if _account_protected(ctx.get("email", "")):
+                    # 受保护账号：不执行任何在线操作，顺延后再查
+                    t["status"] = "pending"
+                    t["trigger_at"] = time.time() + 3600
+                    t["error"] = "账号受保护（AM4_PROTECTED_ACCOUNTS），已跳过自动化"
                     _save_pending_tasks(owner=owner_key)
                     continue
                 # 任务归属账号上下文：在线操作使用该账号凭据与 Cookie
@@ -4014,6 +4036,8 @@ def _resume_loop_targets() -> list[tuple[str, str, dict]]:
     for email in emails:
         if not email:
             continue
+        if _account_protected(email):
+            continue
         settings = _load_settings_for_email(email)
         password = ""
         try:
@@ -4036,6 +4060,8 @@ def _resume_loop_targets() -> list[tuple[str, str, dict]]:
 
 def _start_loop(email: str, password: str, settings: dict, mode: str) -> tuple[bool, str]:
     """为指定账号启动独立采集循环；全局限制并发数，普通启动轮换该账号日志。"""
+    if _account_protected(email):
+        return False, "账号受保护（AM4_PROTECTED_ACCOUNTS），禁止启动循环"
     key = account_key(email)
     with _run_lock:
         existing = _runs.get(key)
