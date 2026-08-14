@@ -70,6 +70,14 @@ class PanelStoreTests(unittest.TestCase):
         self.assertIsNone(ps.get_user_by_id(uid))
         self.assertIsNone(ps.get_account(uid))
 
+    def test_set_user_password(self):
+        uid = ps.create_user("pwuser", "oldpass1", is_admin=True, status="active")
+        ps.set_user_password(uid, "newpass1")
+        self.assertTrue(ps.verify_password(ps.get_user_by_id(uid), "newpass1"))
+        self.assertFalse(ps.verify_password(ps.get_user_by_id(uid), "oldpass1"))
+        with self.assertRaises(ValueError):
+            ps.set_user_password(uid, "123")
+
 
 if __name__ == "__main__":
     unittest.main()

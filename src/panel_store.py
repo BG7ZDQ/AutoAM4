@@ -191,6 +191,19 @@ def set_user_status(uid: int, status: str) -> None:
         )
 
 
+def set_user_password(uid: int, password: str) -> None:
+    """重置用户登录密码（管理员入口），不触碰绑定账号的 AM4 凭据。"""
+    if len(password or "") < 6:
+        raise ValueError("密码至少 6 个字符")
+    with _lock, _conn() as conn:
+        cur = conn.execute(
+            "UPDATE users SET password_hash = ? WHERE id = ?",
+            (generate_password_hash(password, method="pbkdf2:sha256"), uid),
+        )
+        if cur.rowcount == 0:
+            raise ValueError("用户不存在")
+
+
 def delete_user(uid: int) -> None:
     with _lock, _conn() as conn:
         conn.execute("DELETE FROM users WHERE id = ?", (uid,))

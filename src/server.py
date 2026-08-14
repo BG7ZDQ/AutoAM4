@@ -277,10 +277,12 @@ def _login_blocked(username: str) -> bool:
         if len(_login_attempts) > 5000:
             # 防止用户名枚举导致内存无限增长：只保留仍有近期记录的条目
             cutoff = now - _LOGIN_LOCK_SECONDS
-            _login_attempts = {
+            pruned = {
                 k: [t for t in v if t >= cutoff]
                 for k, v in _login_attempts.items() if v
             }
+            _login_attempts.clear()
+            _login_attempts.update(pruned)
         return len(attempts) >= _LOGIN_MAX_ATTEMPTS
 
 
@@ -596,6 +598,7 @@ def api_admin_users():
 
 @app.route("/api/admin/users/<int:uid>/status", methods=["POST"])
 def api_admin_user_status(uid: int):
+    _require_csrf()
     if not _is_admin_request():
         return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
     data = request.get_json(silent=True) or {}
@@ -607,8 +610,44 @@ def api_admin_user_status(uid: int):
     return jsonify({"ok": True})
 
 
+@app.route("/api/admin/users/<int:uid>/password", methods=["POST"])
+def api_admin_user_password(uid: int):
+    _require_csrf()
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    data = request.get_json(silent=True) or {}
+    password = str(data.get("password", ""))
+    if panel_store.get_user_by_id(uid) is None:
+        return jsonify({"ok": False, "msg": "用户不存在"}), 400
+    try:
+        panel_store.set_user_password(uid, password)
+    except ValueError as exc:
+        return jsonify({"ok": False, "msg": str(exc)}), 400
+    return jsonify({"ok": True, "msg": "密码已重置"})
+
+
+@app.route("/api/admin/password", methods=["PUT"])
+def api_admin_change_password():
+    """管理员修改自己的面板密码（需验证原密码）。"""
+    _require_csrf()
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    data = request.get_json(silent=True) or {}
+    old_password = str(data.get("old_password", ""))
+    new_password = str(data.get("new_password", ""))
+    user = _real_user()
+    if user is None or not panel_store.verify_password(user, old_password):
+        return jsonify({"ok": False, "msg": "原密码错误"}), 400
+    try:
+        panel_store.set_user_password(user["id"], new_password)
+    except ValueError as exc:
+        return jsonify({"ok": False, "msg": str(exc)}), 400
+    return jsonify({"ok": True, "msg": "密码已修改，下次登录生效"})
+
+
 @app.route("/api/admin/users/<int:uid>", methods=["DELETE"])
 def api_admin_delete_user(uid: int):
+    _require_csrf()
     if not _is_admin_request():
         return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
     if uid == _real_user()["id"]:
@@ -619,6 +658,7 @@ def api_admin_delete_user(uid: int):
 
 @app.route("/api/admin/impersonate", methods=["POST"])
 def api_admin_impersonate():
+    _require_csrf()
     if not _is_admin_request():
         return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
     data = request.get_json(silent=True) or {}
@@ -683,6 +723,8 @@ MAX_CONCURRENT_LOOPS = max(1, int(os.environ.get("AM4_MAX_CONCURRENT_LOOPS", "3"
 # 持久化"正在运行的循环账号"，供 systemd 重启后由服务令牌续接
 _ACTIVE_LOOPS_FILE = ROOT / "data" / "active_loops.json"
 _sse_clients: list[queue.Queue] = []
+_sse_clients_lock = threading.Lock()
+_MAX_SSE_CLIENTS = max(8, int(os.environ.get("AM4_MAX_SSE_CLIENTS", "50")))
 
 
 def _any_run_running() -> bool:
@@ -2242,6 +2284,15 @@ def _read_csv(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
+def _csv_safe_cell(value) -> str:
+    """CSV formula-injection guard: prefix cells starting with = + - @ or tab,
+    so opening fleet/builds CSVs in Excel cannot execute formulas."""
+    text = str(value if value is not None else "")
+    if text.startswith(("=", "+", "-", "@", "\t")):
+        return "'" + text
+    return text
+
+
 # ===== 建设记录（防重复开辟） =====
 _builds_lock = threading.Lock()
 _BUILD_CSV_FIELDS = [
@@ -2295,7 +2346,7 @@ def _save_builds(builds: list[dict]) -> None:
             for b in builds:
                 row = {}
                 for zh, en in _BUILD_CSV_FIELDS:
-                    row[zh] = b.get(en, "")
+                    row[zh] = _csv_safe_cell(b.get(en, ""))
                 writer.writerow(row)
         os.replace(tmp, p)
     except Exception:
@@ -2559,7 +2610,8 @@ def _write_fleet_csv(rows: list[dict], *, already_locked: bool = False) -> bool:
                 tmp_path = Path(tmp.name)
                 writer = csv.DictWriter(tmp, fieldnames=fieldnames, extrasaction="ignore")
                 writer.writeheader()
-                writer.writerows(rows)
+                writer.writerows({k: _csv_safe_cell(v) for k, v in row.items()}
+                                 for row in rows)
                 tmp.flush()
                 os.fsync(tmp.fileno())
             os.replace(tmp_path, p)
@@ -2942,16 +2994,17 @@ def _natural_key(s: str):
 
 def _broadcast_sse(data: dict):
     dead = []
-    for q in list(_sse_clients):  # 快照迭代，避免并发连接增删导致 RuntimeError
-        try:
-            q.put_nowait(data)
-        except queue.Full:
-            dead.append(q)  # 客户端消费太慢：移除，避免内存无限增长
-        except Exception:
-            dead.append(q)
-    for q in dead:
-        if q in _sse_clients:
-            _sse_clients.remove(q)
+    with _sse_clients_lock:
+        for q in list(_sse_clients):  # 快照迭代，避免并发连接增删导致 RuntimeError
+            try:
+                q.put_nowait(data)
+            except queue.Full:
+                dead.append(q)  # 客户端消费太慢：移除，避免内存无限增长
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            if q in _sse_clients:
+                _sse_clients.remove(q)
 
 
 def _publish_log(line: str) -> None:
@@ -3083,8 +3136,11 @@ def api_status():
 
 @app.route("/api/stream")
 def api_stream():
-    q = queue.Queue(maxsize=200)  # 有界：慢/死连接不无限累积
-    _sse_clients.append(q)
+    with _sse_clients_lock:
+        if len(_sse_clients) >= _MAX_SSE_CLIENTS:
+            return jsonify({"ok": False, "msg": "实时连接数已达上限，请稍后重试"}), 503
+        q = queue.Queue(maxsize=200)  # 有界：慢/死连接不无限累积
+        _sse_clients.append(q)
     # 生成器在响应迭代时才执行（此时已脱离请求上下文），
     # 因此所有依赖 session/g 的账号相关值必须在此（请求上下文内）先算好。
     try:
@@ -3124,8 +3180,9 @@ def api_stream():
                 except queue.Empty:
                     yield ": keepalive\n\n"
         except GeneratorExit:
-            if q in _sse_clients:
-                _sse_clients.remove(q)
+            with _sse_clients_lock:
+                if q in _sse_clients:
+                    _sse_clients.remove(q)
 
     return Response(
         generate(),

@@ -1839,6 +1839,44 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
         self.assertEqual(resp.headers.get("Referrer-Policy"), "same-origin")
 
+    def test_admin_write_requires_csrf(self):
+        with server.app.test_client() as client:
+            resp = client.post("/api/admin/users/1/status",
+                               json={"status": "active"})
+        self.assertEqual(resp.status_code, 403)
+
+    def test_csv_safe_cell_prefixes_formula_start(self):
+        self.assertEqual(server._csv_safe_cell("=cmd"), "'=cmd")
+        self.assertEqual(server._csv_safe_cell("@mail"), "'@mail")
+        self.assertEqual(server._csv_safe_cell("MC-21"), "MC-21")
+        self.assertEqual(server._csv_safe_cell(""), "")
+
+    def test_admin_password_change_flow(self):
+        client = server.app.test_client()
+        login = client.post("/api/login",
+                            json={"username": "testadmin", "password": "test-pass-1"})
+        self.assertEqual(login.status_code, 200)
+        # 原密码错误
+        wrong = client.put("/api/admin/password", json={
+            "old_password": "wrong", "new_password": "newpass1",
+        }, headers={"X-CSRF-Token": server._csrf_token})
+        self.assertEqual(wrong.status_code, 400)
+        # 修改成功
+        ok = client.put("/api/admin/password", json={
+            "old_password": "test-pass-1", "new_password": "newpass1",
+        }, headers={"X-CSRF-Token": server._csrf_token})
+        self.assertEqual(ok.status_code, 200)
+        # 旧密码失效、新密码可登录
+        old_login = server.app.test_client().post(
+            "/api/login", json={"username": "testadmin", "password": "test-pass-1"})
+        self.assertEqual(old_login.status_code, 401)
+        new_login = server.app.test_client().post(
+            "/api/login", json={"username": "testadmin", "password": "newpass1"})
+        self.assertEqual(new_login.status_code, 200)
+        # 恢复原密码，避免影响其他用例
+        panel_store.set_user_password(
+            panel_store.get_user_by_username("testadmin")["id"], "test-pass-1")
+
     def test_unknown_balance_rejects_new_purchase_after_readonly_lookup(self):
         planner = Mock()
         planner.DEFAULT_COST_INDEX = 200

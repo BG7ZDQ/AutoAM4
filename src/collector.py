@@ -841,6 +841,14 @@ def _atomic_write_csv(path: Path, fieldnames: list[str], rows: list[dict],
                       *, already_locked: bool = False) -> bool:
     """原子写 CSV：先写临时文件再 os.replace，避免写一半崩溃损坏原文件。"""
 
+    def safe_row(row: dict) -> dict:
+        """CSV formula-injection guard: prefix cells starting with = + - @ or tab."""
+        out = {}
+        for key, value in (row or {}).items():
+            text = str(value if value is not None else "")
+            out[key] = "'" + text if text.startswith(("=", "+", "-", "@", "\t")) else text
+        return out
+
     def write_locked() -> bool:
         tmp_path: Path | None = None
         try:
@@ -850,7 +858,7 @@ def _atomic_write_csv(path: Path, fieldnames: list[str], rows: list[dict],
                 tmp_path = Path(tmp.name)
                 writer = csv.DictWriter(tmp, fieldnames=fieldnames, extrasaction="ignore")
                 writer.writeheader()
-                writer.writerows(rows)
+                writer.writerows(safe_row(row) for row in rows)
                 tmp.flush()
                 os.fsync(tmp.fileno())
             os.replace(tmp_path, path)
