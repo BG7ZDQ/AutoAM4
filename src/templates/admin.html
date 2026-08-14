@@ -26,12 +26,16 @@ th{color:var(--t3);font-weight:500;white-space:nowrap}
 .ops button{padding:5px 9px;font-size:.78rem}
 .ops-toggle{display:none}
 .note{color:var(--t3);font-size:.85rem;margin-top:8px}
+.mail-cell{display:block;max-width:150px;overflow-x:auto;white-space:nowrap;
+  scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.mail-cell::-webkit-scrollbar{display:none}
 @media(max-width:768px){
   table thead th:nth-child(1),table tbody td:nth-child(1),
   table thead th:nth-child(6),table tbody td:nth-child(6){display:none}
   .ops{display:none;flex-direction:column;gap:5px;margin-top:6px;width:max-content}
   .ops.open{display:flex}
   .ops-toggle{display:inline-flex}
+  .mail-cell{max-width:92px}
   .card{padding:10px}
   th,td{padding:6px 6px;font-size:.8rem}
 }
@@ -45,7 +49,6 @@ th{color:var(--t3);font-weight:500;white-space:nowrap}
 </div>
 <div class="card">
   <h3>用户与账号</h3>
-  <p class="note">点击「进入」会以该账号身份打开主面板（与账号主人看到的一致）；审核后账号才能登录。</p>
   <div style="overflow-x:auto">
   <table>
     <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>AM4 账号</th><th>注册时间</th><th>操作</th></tr></thead>
@@ -60,6 +63,7 @@ function api(path, opts={}){
   return fetch(path, opts).then(r=>r.json());
 }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function mailCell(e){e=String(e==null?'':e);if(!e)return'—';return'<span class="mail-cell" title="'+esc(e)+'">'+esc(e)+'</span>'}
 function loadUsers(){
   api('/api/admin/users').then(d=>{
     const tb=document.getElementById('ub');
@@ -78,7 +82,7 @@ function loadUsers(){
       return '<tr><td>'+u.id+'</td><td>'+esc(u.username)+'</td>'+
         '<td><span class="badge '+(u.is_admin?'admin':'')+'">'+role+'</span></td>'+
         '<td><span class="badge '+st+'">'+esc(u.status)+'</span></td>'+
-        '<td>'+esc(u.am4_email||'—')+'</td>'+
+        '<td>'+mailCell(u.am4_email)+'</td>'+
         '<td>'+new Date(u.created_at*1000).toLocaleString()+'</td>'+
         '<td><button class="ops-toggle btn-pri" onclick="toggleOps(this)">⚙ 操作</button>'+
         '<div class="ops">'+ops.join('')+'</div></td></tr>';
