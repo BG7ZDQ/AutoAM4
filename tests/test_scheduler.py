@@ -1339,6 +1339,18 @@ class ServerSchedulingTests(unittest.TestCase):
             server._stopped_accounts.discard(
                 server.normalize_account("stop@example.com"))
 
+    def test_loop_running_reflects_registry(self):
+        email = "run@example.com"
+        key = server.account_key(email)
+        self.assertFalse(server._loop_running(email))
+        server._runs[key] = {"running": True, "account_email": email}
+        try:
+            self.assertTrue(server._loop_running(email))
+            server._runs[key]["running"] = False
+            self.assertFalse(server._loop_running(email))
+        finally:
+            server._runs.pop(key, None)
+
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
             "othadmin", "other-pass-1", is_admin=True, status="active")

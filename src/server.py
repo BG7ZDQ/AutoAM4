@@ -2065,7 +2065,7 @@ def _run_pending_task(task: dict) -> None:
     if _account_manually_stopped(stop_email):
         task["status"] = "pending"
         task["trigger_at"] = time.time() + 1800
-        task["error"] = "循环已停止，待办暂停；启动循环后恢复"
+        task["error"] = "循环已停止，待办暂停；"
         return
     kind = task.get("kind")
     params = task.get("params") or {}
@@ -2609,7 +2609,14 @@ def _pending_scheduler_loop() -> None:
                     # 用户手动停止循环：该账号待办同步暂停，启动循环后自动恢复
                     t["status"] = "pending"
                     t["trigger_at"] = time.time() + 1800
-                    t["error"] = "循环已停止，待办暂停；启动循环后恢复"
+                    t["error"] = "循环已停止，待办暂停；"
+                    _save_pending_tasks(owner=owner_key)
+                    continue
+                if not _loop_running(ctx.get("email", "")):
+                    # 循环未运行：待办（起飞/营销等）一律不执行，启动循环后恢复
+                    t["status"] = "pending"
+                    t["trigger_at"] = time.time() + 1800
+                    t["error"] = "循环未运行，待办暂停；"
                     _save_pending_tasks(owner=owner_key)
                     continue
                 # 任务归属账号上下文：在线操作使用该账号凭据与 Cookie
@@ -4468,6 +4475,16 @@ def _persist_stopped_accounts() -> None:
 
 def _account_manually_stopped(email: str) -> bool:
     return bool(email) and normalize_account(email) in _stopped_accounts
+
+
+def _loop_running(email: str) -> bool:
+    """该账号当前是否有存活的采集循环（待办执行门禁）。"""
+    if not email:
+        return False
+    key = account_key(email)
+    with _run_lock:
+        run = _runs.get(key)
+        return bool(run and run.get("running"))
 
 
 def _resume_loop_targets() -> list[tuple[str, str, dict]]:
