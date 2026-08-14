@@ -46,7 +46,6 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 <div class="top">
   <h1>🛠 管理员面板</h1>
   <span class="sp"></span>
-  <button id="loopAllBtn" class="btn-ok" data-action="start" onclick="toggleAllLoops()">▶ 启动全部</button>
   <button class="btn-ghost" onclick="openPwdModal()">重置密码</button>
   <button class="btn-ghost" onclick="logout()">退出</button>
 </div>
@@ -166,18 +165,12 @@ function submitPwd(){
 }
 function loadRuns(){
   api('/api/status').then(d=>{
-    const runs=d.runs||[];
-    const running=new Set(runs.filter(x=>x.running)
+    const running=new Set((d.runs||[]).filter(x=>x.running)
       .map(x=>String(x.account||'').toLowerCase()));
     document.querySelectorAll('.run-dot').forEach(dot=>{
       const acct=String(dot.getAttribute('data-acct')||'').toLowerCase();
       dot.classList.toggle('on',running.has(acct));
     });
-    const btn=document.getElementById('loopAllBtn');
-    const anyRunning=runs.some(x=>x.running);
-    btn.textContent=anyRunning?'⏹ 停止全部':'▶ 启动全部';
-    btn.className=anyRunning?'btn-err':'btn-ok';
-    btn.dataset.action=anyRunning?'stop':'start';
   }).catch(()=>{});
 }
 function toggleOps(btn){
@@ -193,25 +186,6 @@ function loadAudit(){
     pre.textContent=(d.lines||[]).join('\n')||'暂无管理日志';
     pre.scrollTop=pre.scrollHeight;
   }).catch(()=>{ pre.textContent='加载失败'; info.textContent=''; });
-}
-function toggleAllLoops(){
-  const btn=document.getElementById('loopAllBtn');
-  if(btn.dataset.action==='stop') stopAll();
-  else startAll();
-}
-function startAll(){
-  api('/api/admin/loops/start',{method:'POST'}).then(d=>{
-    alert(d.msg||'已提交');
-    if(d.errors&&d.errors.length)alert('部分账号未能启动：\n'+d.errors.join('\n'));
-    loadRuns();
-  });
-}
-function stopAll(){
-  if(!confirm('确定停止所有账号的采集循环？'))return;
-  api('/api/admin/loops/stop',{method:'POST'}).then(d=>{
-    alert(d.msg||'已提交');
-    loadRuns();
-  });
 }
 function enter(id){
   api('/api/admin/impersonate',{method:'POST',headers:{'Content-Type':'application/json'},
