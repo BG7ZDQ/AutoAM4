@@ -39,7 +39,7 @@ import storage_utils
 
 # ?????????????????????????????????
 _TEST_ADMIN_ID = panel_store.create_user(
-    "testadmin", "test-pass-1", is_admin=True, status="active",
+    "tadmin", "test-pass-1", is_admin=True, status="active",
     am4_email="tests@example.invalid", am4_password="test-password",
 )
 server._effective_user = lambda: panel_store.get_user_by_id(_TEST_ADMIN_ID)

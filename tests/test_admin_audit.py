@@ -33,6 +33,25 @@ class AdminAuditTests(unittest.TestCase):
             server._audit("创建管理员", target="root")
         self.assertIn("env", tmp.read_text(encoding="utf-8"))
 
+    def test_audit_sanitizes_injection_characters(self):
+        tmp = Path(tempfile.mkdtemp()) / "audit.log"
+        with patch.object(server, "_AUDIT_LOG", tmp):
+            server._audit(
+                "登录失败",
+                target="evil\n2026-08-15 10:00:00 | admin | 删除用户 | root | ok",
+                result="ok")
+        text = tmp.read_text(encoding="utf-8")
+        # 换行与控制字符被移除：攻击者无法伪造新日志行/新字段
+        self.assertEqual(len(text.splitlines()), 1)
+        self.assertEqual(text.count("|"), 4)
+
+    def test_unimpersonate_requires_admin(self):
+        with server.app.test_client() as client:
+            resp = client.post(
+                "/api/admin/unimpersonate",
+                headers={"X-CSRF-Token": server._csrf_token})
+        self.assertEqual(resp.status_code, 403)
+
     def test_rotate_and_cleanup_old_logs(self):
         tmp = Path(tempfile.mkdtemp())
         audit = tmp / "admin_audit.log"
@@ -73,7 +92,7 @@ class AdminAuditTests(unittest.TestCase):
         with patch.object(server, "_AUDIT_LOG", tmp):
             client = server.app.test_client()
             client.post("/api/login",
-                        json={"username": "testadmin", "password": "test-pass-1"},
+                        json={"username": "tadmin", "password": "test-pass-1"},
                         headers={"X-CSRF-Token": server._csrf_token})
             client.post("/api/admin/users/%d/password" % uid,
                         json={"password": "newpass-1"},

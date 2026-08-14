@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -44,6 +45,8 @@ _SETTING_ENV_MAP: dict[str, str] = {
     "min_a_check_hours": "AM4_MIN_A_CHECK_HOURS",
     "max_wear_for_takeoff": "AM4_MAX_WEAR_FOR_TAKEOFF",
 }
+
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9 _/]{2,8}$")
 
 _AUTO_ENV_MAP: dict[str, str] = {
     "auto_marketing": "AM4_AUTO_MARKETING",
@@ -139,6 +142,15 @@ def admin_exists() -> bool:
     return row is not None
 
 
+def _account_binding_exists(conn: sqlite3.Connection, email_norm: str) -> bool:
+    """是否存在绑定该游戏邮箱的账号记录（查询与插入之间竞态的兜底判定）。"""
+    row = conn.execute(
+        "SELECT 1 FROM accounts WHERE lower(trim(am4_email)) = ? LIMIT 1",
+        (email_norm,),
+    ).fetchone()
+    return row is not None
+
+
 def create_user(
     username: str,
     password: str,
@@ -151,21 +163,16 @@ def create_user(
 ) -> int:
     """创建用户及其 1:1 绑定的 AM4 账号记录，返回用户 id。"""
     username = (username or "").strip()
-    if len(username) < 2:
-        raise ValueError("用户名至少 2 个字符")
+    if not _USERNAME_RE.fullmatch(username):
+        raise ValueError("用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠")
     if len(password) < 6:
         raise ValueError("密码至少 6 个字符")
     now = time.time()
     normalized = normalize_settings(settings or {})
     with _lock, _conn() as conn:
         email_norm = normalize_email(am4_email)
-        if email_norm:
-            dup = conn.execute(
-                "SELECT 1 FROM accounts WHERE lower(trim(am4_email)) = ? LIMIT 1",
-                (email_norm,),
-            ).fetchone()
-            if dup is not None:
-                raise ValueError("该游戏账号已绑定其他网站账户")
+        if email_norm and _account_binding_exists(conn, email_norm):
+            raise ValueError("该游戏账号已绑定其他网站账户")
         try:
             cur = conn.execute(
                 "INSERT INTO users (username, password_hash, is_admin, status, created_at, approved_at) "
@@ -182,12 +189,19 @@ def create_user(
             uid = cur.lastrowid
         except sqlite3.IntegrityError:
             raise ValueError("用户名已存在") from None
-        conn.execute(
-            "INSERT INTO accounts (user_id, am4_email, am4_password, settings, updated_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (uid, am4_email or "", am4_password or "",
-             json.dumps(normalized, ensure_ascii=False), now),
-        )
+        try:
+            conn.execute(
+                "INSERT INTO accounts (user_id, am4_email, am4_password, settings, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (uid, am4_email or "", am4_password or "",
+                 json.dumps(normalized, ensure_ascii=False), now),
+            )
+        except sqlite3.IntegrityError:
+            # 多进程并发时，唯一索引可能先于预检查命中；确认确有同邮箱绑定才按
+            # “邮箱重复”报告，其他完整性冲突原样上抛，避免掩盖真实错误。
+            if email_norm and _account_binding_exists(conn, email_norm):
+                raise ValueError("该游戏账号已绑定其他网站账户") from None
+            raise
     return uid
 
 
@@ -358,6 +372,26 @@ def list_users() -> list[dict]:
             "ORDER BY u.id"
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def account_status_for_email(email: str) -> str | None:
+    """按游戏邮箱查询绑定网站账户的状态；未绑定返回 None。
+
+    历史数据若存在重复绑定，非 active 状态优先返回，保证“停用即保护”不遗漏。
+    """
+    email_norm = normalize_email(email)
+    if not email_norm:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT u.status FROM users u "
+            "JOIN accounts a ON a.user_id = u.id "
+            "WHERE lower(trim(a.am4_email)) = ? "
+            "ORDER BY CASE WHEN u.status = 'active' THEN 1 ELSE 0 END "
+            "LIMIT 1",
+            (email_norm,),
+        ).fetchone()
+    return str(row["status"]) if row else None
 
 
 def settings_to_env(settings: dict) -> dict[str, str]:

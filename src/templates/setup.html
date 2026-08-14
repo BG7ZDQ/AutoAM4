@@ -30,12 +30,12 @@ button:hover{filter:brightness(1.05)}
   <p class="sub">首次使用：创建管理员账户（纯管理，不绑定游戏账号）。下方可选把现有 .env 中的游戏账号接入为普通用户。</p>
   <label>初始化令牌（.env 中的 AM4_SETUP_TOKEN）</label>
   <input id="tk" type="password" autocomplete="one-time-code">
-  <label>管理员用户名</label>
+  <label>管理员用户名（2~8 位英文字母或数字，可含空格、_、/）</label>
   <input id="u" autocomplete="username" autofocus>
   <label>管理员密码（≥6 字符）</label>
   <input id="p" type="password" autocomplete="new-password">
   <div style="border-top:1px dashed var(--brd);margin:18px 0 4px"></div>
-  <label>接入 .env 游戏账号？用户名（可选，留空则跳过）</label>
+  <label>接入 .env 游戏账号？用户名（可选，留空则跳过；规则同上）</label>
   <input id="bu" autocomplete="off" placeholder="例如：main">
   <label>该用户的登录密码（可选）</label>
   <input id="bp" type="password" autocomplete="new-password">
@@ -48,11 +48,22 @@ button:hover{filter:brightness(1.05)}
 <script>
 const CSRF = "{{ csrf_token }}";
 {% if setup_enabled %}
+const USER_RE = /^[A-Za-z0-9 _/]{2,8}$/;
 function setup(){
   const tk=document.getElementById('tk').value.trim();
   const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
   const bu=document.getElementById('bu').value.trim(), bp=document.getElementById('bp').value;
   const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
+  if(!USER_RE.test(u)){
+    msg.className='msg err';
+    msg.textContent='用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠';
+    return;
+  }
+  if(bu&&!USER_RE.test(bu)){
+    msg.className='msg err';
+    msg.textContent='接入用户名的规则与管理员用户名一致';
+    return;
+  }
   fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
     body:JSON.stringify({setup_token:tk,username:u,password:p,bootstrap_username:bu,bootstrap_password:bp})})
     .then(r=>r.json().then(d=>({ok:r.ok,d})))

@@ -29,7 +29,7 @@ button:hover{filter:brightness(1.05)}
 <div class="card">
   <h1>注册账户</h1>
   <p class="sub">一个网站账户对应一个游戏账号，注册后需管理员审核。</p>
-  <label>用户名（登录用，≥2 字符）</label>
+  <label>用户名（2~8 位英文字母或数字，可含空格、_、/）</label>
   <input id="u" autocomplete="username" autofocus>
   <label>密码（≥6 字符）</label>
   <input id="p" type="password" autocomplete="new-password">
@@ -43,10 +43,16 @@ button:hover{filter:brightness(1.05)}
 </div>
 <script>
 const CSRF = "{{ csrf_token }}";
+const USER_RE = /^[A-Za-z0-9 _/]{2,8}$/;
 function reg(){
   const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value,
         e=document.getElementById('e').value.trim(), pw=document.getElementById('pw').value;
   const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
+  if(!USER_RE.test(u)){
+    msg.className='msg err';
+    msg.textContent='用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠';
+    return;
+  }
   fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
     body:JSON.stringify({username:u,password:p,am4_email:e,am4_password:pw})})
     .then(r=>r.json().then(d=>({ok:r.ok,d})))

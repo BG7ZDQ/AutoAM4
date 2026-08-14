@@ -1171,7 +1171,7 @@ class ServerSchedulingTests(unittest.TestCase):
         with server.app.test_client() as client:
             resp = client.post(
                 "/api/login",
-                json={"username": "testadmin", "password": "test-pass-1"})
+                json={"username": "tadmin", "password": "test-pass-1"})
         self.assertEqual(resp.status_code, 403)
 
     def test_admin_write_requires_csrf(self):
@@ -1182,10 +1182,10 @@ class ServerSchedulingTests(unittest.TestCase):
 
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
-            "otheradmin", "other-pass-1", is_admin=True, status="active")
+            "othadmin", "other-pass-1", is_admin=True, status="active")
         try:
             with patch.object(server, "_real_user",
-                              return_value=panel_store.get_user_by_username("testadmin")), \
+                              return_value=panel_store.get_user_by_username("tadmin")), \
                  server.app.test_client() as client:
                 resp = client.post(
                     f"/api/admin/users/{other_admin}/password",
@@ -1201,7 +1201,7 @@ class ServerSchedulingTests(unittest.TestCase):
             panel_store.delete_user(other_admin)
 
     def test_protected_account_blocks_online_build(self):
-        admin = panel_store.get_user_by_username("testadmin")
+        admin = panel_store.get_user_by_username("tadmin")
         email = panel_store.get_account(admin["id"])["am4_email"]
         server.PROTECTED_ACCOUNTS.add(server.normalize_account(email))
         try:
@@ -1215,7 +1215,7 @@ class ServerSchedulingTests(unittest.TestCase):
             server.PROTECTED_ACCOUNTS.discard(server.normalize_account(email))
 
     def test_protected_account_blocks_online_estimate(self):
-        admin = panel_store.get_user_by_username("testadmin")
+        admin = panel_store.get_user_by_username("tadmin")
         email = panel_store.get_account(admin["id"])["am4_email"]
         server.PROTECTED_ACCOUNTS.add(server.normalize_account(email))
         try:
@@ -1263,7 +1263,7 @@ class ServerSchedulingTests(unittest.TestCase):
         }
         try:
             with patch.object(server, "_real_user",
-                              return_value=panel_store.get_user_by_username("testadmin")), \
+                              return_value=panel_store.get_user_by_username("tadmin")), \
                  server.app.test_client() as client:
                 resp = client.post(
                     f"/api/admin/users/{uid}/status",
@@ -1285,24 +1285,24 @@ class ServerSchedulingTests(unittest.TestCase):
     def test_admin_password_synced_from_env(self):
         # 管理员密码只能通过服务器配置修改：.env 配置的密码会在启动时同步
         with patch.dict(os.environ,
-                        {"AM4_ADMIN_USERNAME": "testadmin",
+                        {"AM4_ADMIN_USERNAME": "tadmin",
                          "AM4_ADMIN_PASSWORD": "env-pass-1"}, clear=False):
             server._bootstrap_admin_from_env()
         try:
             old_login = server.app.test_client().post(
-                "/api/login", json={"username": "testadmin",
+                "/api/login", json={"username": "tadmin",
                                     "password": "test-pass-1"},
                 headers={"X-CSRF-Token": server._csrf_token})
             self.assertEqual(old_login.status_code, 401)
             new_login = server.app.test_client().post(
-                "/api/login", json={"username": "testadmin",
+                "/api/login", json={"username": "tadmin",
                                     "password": "env-pass-1"},
                 headers={"X-CSRF-Token": server._csrf_token})
             self.assertEqual(new_login.status_code, 200)
         finally:
             # 恢复原密码，避免影响其他用例
             panel_store.set_user_password(
-                panel_store.get_user_by_username("testadmin")["id"], "test-pass-1")
+                panel_store.get_user_by_username("tadmin")["id"], "test-pass-1")
 
     def test_admin_resets_user_password(self):
         uid = panel_store.create_user(
@@ -1311,7 +1311,7 @@ class ServerSchedulingTests(unittest.TestCase):
         panel_store.set_user_status(uid, "active")
         client = server.app.test_client()
         client.post("/api/login",
-                    json={"username": "testadmin", "password": "test-pass-1"},
+                    json={"username": "tadmin", "password": "test-pass-1"},
                     headers={"X-CSRF-Token": server._csrf_token})
         resp = client.post(
             "/api/admin/users/%d/password" % uid,

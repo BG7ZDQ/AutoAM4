@@ -133,10 +133,8 @@ def _account_protected(email: str) -> bool:
     if norm in PROTECTED_ACCOUNTS:
         return True
     try:
-        for user in panel_store.list_users():
-            if normalize_account(user.get("am4_email") or "") == norm:
-                if user.get("status") != "active":
-                    return True
+        status = panel_store.account_status_for_email(email)
+        return status is not None and status != "active"
     except Exception:
         pass
     return False
@@ -250,6 +248,9 @@ _service_token = _load_or_create_secret(_SERVICE_TOKEN_FILE)
 # 网页初始化令牌：首次创建管理员必须提供（防止服务在初始化前暴露到公网时被抢先接管）。
 _SETUP_TOKEN = os.environ.get("AM4_SETUP_TOKEN", "").strip()
 
+# 是否部署在单一可信反代后：用于 X-Forwarded-* 解析与回环请求判定
+_TRUST_PROXY = os.environ.get("AM4_TRUST_PROXY", "0") == "1"
+
 
 def _require_csrf():
     """POST 写操作保护：要求携带与页面令牌匹配的 X-CSRF-Token 头。
@@ -260,7 +261,12 @@ def _require_csrf():
     token = request.headers.get("X-CSRF-Token", "")
     # 磁盘全局令牌只对回环请求生效：兼容本机脚本与测试；远端即使拿到该令牌
     # 也无法用于跨站写操作（远程浏览器发来的请求 remote_addr 不是回环）。
-    loopback = request.remote_addr in {"127.0.0.1", "::1"}
+    remote = request.remote_addr or ""
+    loopback = remote in {"127.0.0.1", "::1"}
+    if loopback and not _TRUST_PROXY and request.headers.get("X-Forwarded-For"):
+        # 反代未启用 ProxyFix 时 remote_addr 恒为代理自身：带 X-Forwarded-For
+        # 的请求来自远端，不能按回环放行全局令牌
+        loopback = False
     valid = token == _session_csrf() or \
         token == _service_token or \
         request.headers.get("X-Service-Token", "") == _service_token or \
@@ -286,7 +292,7 @@ app.config.update(
 
 import panel_store
 
-if os.environ.get("AM4_TRUST_PROXY", "0") == "1":
+if _TRUST_PROXY:
     # 部署在 nginx 等可信反代后时，用 X-Forwarded-For/Proto 还原真实客户端地址，
     # 让登录/注册限流按真实来源计数。仅当上游只有一个可信代理时启用。
     from werkzeug.middleware.proxy_fix import ProxyFix
@@ -435,7 +441,7 @@ def _is_admin_request() -> bool:
     return bool(user and user.get("is_admin"))
 
 
-def _stop_run_for_email(email: str) -> bool:
+def _stop_run_for_email(email: str, reason: str = "停用") -> bool:
     """停止指定游戏账号正在运行的采集循环（停用/删除用户时联动调用）。"""
     if not email:
         return False
@@ -448,7 +454,7 @@ def _stop_run_for_email(email: str) -> bool:
         run["stop_requested"] = True
         if proc and proc.poll() is None:
             proc.terminate()
-        msg = "⏹ 账号已被管理员停用，循环已停止\n"
+        msg = f"⏹ 账号已被管理员{reason}，循环已停止\n"
         _append_log(msg, paths=run.get("paths"))
         _broadcast_sse({"type": "log", "line": msg, "account": email})
     return True
@@ -759,7 +765,7 @@ def api_admin_delete_user(uid: int):
     account = panel_store.get_account(uid) or {}
     email = account.get("am4_email", "")
     panel_store.delete_user(uid)
-    _stop_run_for_email(email)
+    _stop_run_for_email(email, reason="删除")
     _audit("删除用户", target=target.get("username", ""), result="ok")
     return jsonify({"ok": True})
 
@@ -785,13 +791,16 @@ def api_admin_impersonate():
 @app.route("/api/admin/unimpersonate", methods=["POST"])
 def api_admin_unimpersonate():
     _require_csrf()
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
     prev_id = session.get("impersonate_uid")
     prev_name = ""
     if prev_id:
         prev = panel_store.get_user_by_id(prev_id)
         prev_name = (prev or {}).get("username", "") if prev else ""
     session.pop("impersonate_uid", None)
-    _audit("退出模拟", target=prev_name, result="ok")
+    if prev_name:
+        _audit("退出模拟", target=prev_name, result="ok")
     return jsonify({"ok": True})
 
 
@@ -1108,13 +1117,26 @@ def _audit(action: str, target: str = "", result: str = "ok",
                 actor = str(user.get("username", "")) or "admin"
         except Exception:
             pass
-        line = f"{_now_bjt().strftime('%Y-%m-%d %H:%M:%S')} | {actor} | {action} | {target} | {result}"
+        # 字段净化：去掉换行/控制字符、替换分隔符，防止用户名等外部输入伪造日志行
+        def _clean(value) -> str:
+            text = str(value if value is not None else "")
+            text = re.sub(r"[\r\n\t\x00-\x1f]+", " ", text)
+            return text.replace("|", "¦")
+
+        ts = _now_bjt().strftime("%Y-%m-%d %H:%M:%S")
+        actor = _clean(actor)
+        action = _clean(action)
+        target = _clean(target)
+        result = _clean(result)
+        detail = _clean(detail)
+        line = f"{ts} | {actor} | {action} | {target} | {result}"
         if detail:
             line += f" | {detail}"
         with _AUDIT_LOCK:
             _AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
             with _AUDIT_LOG.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
+            _chmod_private(_AUDIT_LOG)
     except Exception:
         pass
 
@@ -3301,6 +3323,7 @@ def index():
     return render_template(
         "index.html", csrf_token=_session_csrf(),
         account=_session_account()["email"],
+        username=(_effective_user() or {}).get("username", ""),
         initial_running=initial_running, initial_mode=initial_mode,
         dashboard_bootstrap={
             "fleet": _dashboard_fleet_snapshot(fleet), "hubs": hubs,
@@ -3376,6 +3399,7 @@ def api_stream():
     with _maint_cache_lock:
         _maint_init = _maint_cache.get(_session_cache_key())
     account_email = _session_account().get("email", "")
+    stream_username = (_effective_user() or {}).get("username", "")
     runs = _runs_payload()
     if not _is_admin_request():
         runs = [r for r in runs if normalize_account(r["account"])
@@ -3391,6 +3415,7 @@ def api_stream():
                 "running": any(r["running"] for r in runs),
                 "mode": "loop" if any(r["running"] for r in runs) else "",
                 "account": account_email,
+                "username": stream_username,
                 "runs": runs,
                 "log": lines[-50:],  # 最近50条，更早的可上翻滚动加载
                 "log_start": max(0, _log_total - 50),
