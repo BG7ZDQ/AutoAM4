@@ -1308,6 +1308,22 @@ class ServerSchedulingTests(unittest.TestCase):
             server._stopped_accounts.discard(
                 server.normalize_account("stop@example.com"))
 
+    def test_pending_task_aborts_when_account_stopped(self):
+        server._stopped_accounts.add(server.normalize_account("stop@example.com"))
+        old = getattr(server._task_account_ctx, "account", None)
+        try:
+            task = {"status": "pending", "title": "x", "trigger_at": 0,
+                    "account": server.account_key("stop@example.com")}
+            server._task_account_ctx.account = {
+                "email": "stop@example.com", "password": "p", "settings": {}}
+            server._run_pending_task(task)
+            self.assertEqual(task["status"], "pending")
+            self.assertIn("循环已停止", task["error"])
+        finally:
+            server._task_account_ctx.account = old
+            server._stopped_accounts.discard(
+                server.normalize_account("stop@example.com"))
+
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
             "othadmin", "other-pass-1", is_admin=True, status="active")

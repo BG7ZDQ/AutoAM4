@@ -2060,6 +2060,13 @@ def _run_pending_task(task: dict) -> None:
             task["status"] = "cancelled"
             task["error"] = "任务归属账号与执行上下文不一致，未执行"
             return
+    # 手动停止即全面停运：执行前再次检查，避免停止后仍有在途任务放飞飞机
+    stop_email = (ctx or {}).get("email", "") or _active_credentials()[0]
+    if _account_manually_stopped(stop_email):
+        task["status"] = "pending"
+        task["trigger_at"] = time.time() + 1800
+        task["error"] = "循环已停止，待办暂停；启动循环后恢复"
+        return
     kind = task.get("kind")
     params = task.get("params") or {}
     if _removed_aircraft_guard(task):
@@ -4470,6 +4477,8 @@ def _resume_loop_targets() -> list[tuple[str, str, dict]]:
         if not email:
             continue
         if _account_protected(email):
+            continue
+        if _account_manually_stopped(email):
             continue
         settings = _load_settings_for_email(email)
         password = ""
