@@ -58,12 +58,12 @@ function setup(){
   const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
   if(!u||uRaw!==u||!USER_RE.test(u)){
     msg.className='msg err';
-    msg.textContent='用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠，且头尾不能有空格';
+    msg.textContent='用户名需为 2~8 位字母/数字，可含空格 _ /，头尾勿空格';
     return;
   }
   if(buRaw&&(buRaw!==bu||!USER_RE.test(bu))){
     msg.className='msg err';
-    msg.textContent='接入用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠，且头尾不能有空格';
+    msg.textContent='接入用户名规则同上';
     return;
   }
   fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},

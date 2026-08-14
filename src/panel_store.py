@@ -167,7 +167,7 @@ def create_user(
         raise ValueError("用户名头尾不能有空格")
     username = raw_username.strip()
     if not _USERNAME_RE.fullmatch(username):
-        raise ValueError("用户名仅允许 2~8 位英文字母或数字、空格、下划线或斜杠")
+        raise ValueError("用户名仅限 2~8 位字母/数字，可含空格、_、/")
     if len(password) < 6:
         raise ValueError("密码至少 6 个字符")
     now = time.time()

@@ -58,7 +58,7 @@ button:hover{filter:brightness(1.05)}
 <script>
 const CSRF = "{{ csrf_token }}";
 const USER_RE = /^[A-Za-z0-9 _/]{2,8}$/;
-const USER_HINT = '仅允许 2~8 位英文字母或数字，可含空格、_ 或 /；头尾不能有空格';
+const USER_HINT = '2~8 位字母/数字，可含空格 _ /，头尾勿空格';
 function err(text){const m=document.getElementById('msg');m.className='msg err';m.textContent=text;}
 function clearErr(){const m=document.getElementById('msg');m.className='msg';m.textContent='';}
 function showUErr(text){const e=document.getElementById('uerr');e.textContent=text||'';e.classList.add('show');}
