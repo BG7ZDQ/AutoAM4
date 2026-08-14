@@ -1724,16 +1724,48 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertEqual(curl.call_count, 1)
         self.assertEqual(server._market_rt_cache[server._active_account_key]["balance"], "57,000,000")
 
-    def test_task_owned_by_another_account_is_never_executed(self):
+    def test_task_never_executes_with_mismatched_thread_context(self):
         task = {
             "account": account_storage.account_key("other@example.invalid"),
             "kind": "takeoff", "status": "running", "trigger_at": 0,
             "params": {"fid": "fid-1", "route_id": "route-1", "reg": "SAFE-1"},
         }
-        with patch.object(server, "_get_route_planner") as get_planner:
-            server._run_pending_task(task)
-        self.assertEqual(task["status"], "cancelled")
-        get_planner.assert_not_called()
+        # 线程上下文归属另一个账号：必须取消，绝不能串号执行
+        server._task_account_ctx.account = {
+            "email": "wrong@example.invalid", "password": "p",
+            "settings": panel_store.DEFAULT_SETTINGS,
+        }
+        try:
+            with patch.object(server, "_get_route_planner") as get_planner:
+                server._run_pending_task(task)
+            self.assertEqual(task["status"], "cancelled")
+            get_planner.assert_not_called()
+        finally:
+            server._task_account_ctx.account = None
+
+    def test_task_executes_with_matching_thread_context(self):
+        task = {
+            "account": account_storage.account_key("tests@example.invalid"),
+            "kind": "takeoff", "status": "running", "trigger_at": 0,
+            "params": {"fid": "fid-1", "route_id": "route-1", "reg": "SAFE-1"},
+        }
+        server._task_account_ctx.account = {
+            "email": "tests@example.invalid", "password": "p",
+            "settings": panel_store.DEFAULT_SETTINGS,
+        }
+        try:
+            with patch.object(server, "_get_route_planner") as get_planner, \
+                 patch.object(server, "_current_fuel_lbs", return_value=500000), \
+                 patch.object(server, "_latest_home_maintenance",
+                              return_value={"停飞": "0"}), \
+                 patch.object(server, "_refresh_fleet_row", return_value=None), \
+                 patch.object(server, "_add_takeoff_task"), \
+                 patch.object(server, "_publish_log"):
+                server._run_pending_task(task)
+            self.assertNotEqual(task["status"], "cancelled")
+            get_planner.assert_called()
+        finally:
+            server._task_account_ctx.account = None
 
     def test_account_switch_swaps_pending_queue_and_clears_caches(self):
         old_email = "old@example.invalid"

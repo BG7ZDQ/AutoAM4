@@ -124,6 +124,10 @@ _USER_AGENT = (
 # 部署时按 PATH 自动选择，避免把采集器绑定到单一操作系统。
 CURL_BIN = shutil.which("curl.exe") or shutil.which("curl") or "curl"
 
+# 无控制台父进程（如 systemd/隐藏启动的服务）在 Windows 上拉起 curl.exe 时，
+# 会为每个子进程新建可见 CMD 窗口；加 CREATE_NO_WINDOW 消除弹窗。
+_SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
 # 飞机结束飞行、维护或改装后，等待游戏状态完成切换再尝试起飞。
 TAKEOFF_READY_BUFFER_SECONDS = 120
 DAILY_FULL_HOUR_BJT = 6       # 游戏需求日切对应北京时间 06:00
@@ -192,7 +196,8 @@ def _do_curl(url: str, data: str | None, output: Path | None, referer: str) -> s
 
     if output is not None:
         cmd += ["-o", str(output), url]
-        subprocess.run(cmd, check=True, capture_output=True)
+        subprocess.run(cmd, check=True, capture_output=True,
+                       creationflags=_SUBPROCESS_FLAGS)
         return output.read_text(encoding="utf-8", errors="replace")
     else:
         tf = tempfile.NamedTemporaryFile(suffix=".html", delete=False)
@@ -200,7 +205,8 @@ def _do_curl(url: str, data: str | None, output: Path | None, referer: str) -> s
         tmp_path = Path(tf.name)
         cmd += ["-o", str(tmp_path), url]
         try:
-            subprocess.run(cmd, check=True, capture_output=True)
+            subprocess.run(cmd, check=True, capture_output=True,
+                           creationflags=_SUBPROCESS_FLAGS)
         except subprocess.CalledProcessError:
             tmp_path.unlink(missing_ok=True)
             raise

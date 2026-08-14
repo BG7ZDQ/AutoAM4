@@ -865,6 +865,8 @@ _pending_lock = threading.RLock()
 _tasks_by_account: dict[str, list[dict]] = {}
 _pending_tasks: list[dict] = []  # 活跃账号待办的镜像引用（兼容既有代码/测试）
 _pending_seq = 0
+# 待办加载专用串行锁：多账号并发启动循环时，防止两个加载互相覆盖全局镜像/队列
+_pending_load_lock = threading.Lock()
 
 
 def _tasks_for(owner_key: str) -> list[dict]:
@@ -903,10 +905,18 @@ def _is_recoverable_network_error(error) -> bool:
 
 
 def _load_pending_tasks(path: Path | None = None, owner: str | None = None) -> None:
+    with _pending_load_lock:
+        _load_pending_tasks_impl(path, owner)
+
+
+def _load_pending_tasks_impl(path: Path | None = None, owner: str | None = None) -> None:
     """启动时恢复未完成的待定任务（跨重启保留）。"""
     global _pending_tasks, _pending_seq
     _pending_tasks = []
-    _pending_seq = 0
+    owner_key = owner or _active_account_key
+    # _pending_seq 是全局序号（跨账号共用），绝不能归零重算：
+    # 否则第二个账号加载会把序号倒拨，导致多个账号出现重复任务 id。
+    # 下方续排逻辑只做单调向上推进：max(当前全局序号, 本文件已有最大序号)。
     try:
         p = path or _paths()["pending"]
         if not p.exists():
@@ -1057,12 +1067,12 @@ def _load_pending_tasks(path: Path | None = None, owner: str | None = None) -> N
             active_followups.add(reg)
             fixed = True
         if fixed:
-            _save_pending_tasks(p)
+            # 必须显式 owner：否则会把「活跃账号」的队列写进本账号文件
+            _save_pending_tasks(path=p, owner=owner_key)
     except Exception as e:
         _pending_tasks = []
         _append_log(f"⚠ 待办任务加载失败，未执行任何旧任务：{e}")
     # 注册到按账号队列；加载其他账号时不影响活跃账号的镜像引用
-    owner_key = owner or _active_account_key
     with _pending_lock:
         _tasks_by_account[owner_key] = _pending_tasks
         if owner_key != _active_account_key:
@@ -1599,10 +1609,16 @@ def _run_pending_task(task: dict) -> None:
     """执行一条到期的待定任务；未就绪的任务会顺延。"""
     owner = str(task.get("account") or _active_account_key)
     task["account"] = owner
-    if owner != _active_account_key:
-        task["status"] = "cancelled"
-        task["error"] = "账号已切换，旧账号任务未执行"
-        return
+    # 以「线程级任务归属账号」为唯一权威，而不是全局活跃账号：
+    # 多账号并发循环时，任意账号的到期任务都应在自己的上下文中执行；
+    # 只有上下文缺失或与任务归属不一致时才算异常，避免串号执行。
+    ctx = getattr(_task_account_ctx, "account", None)
+    if ctx is not None and (ctx.get("email") or ""):
+        ctx_key = account_key(str(ctx["email"]))
+        if ctx_key != owner:
+            task["status"] = "cancelled"
+            task["error"] = "任务归属账号与执行上下文不一致，未执行"
+            return
     kind = task.get("kind")
     params = task.get("params") or {}
     if _removed_aircraft_guard(task):
@@ -3984,6 +4000,7 @@ def _runner(run: dict) -> None:
             encoding="utf-8",
             errors="replace",
             env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         # 先安全登记 proc（受锁保护），消除"刚启动即点停止"的竞态窗口
         with _run_lock:
