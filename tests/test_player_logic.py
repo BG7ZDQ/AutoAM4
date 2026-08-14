@@ -1754,6 +1754,25 @@ class ServerSchedulingTests(unittest.TestCase):
         finally:
             server._runs.clear()
 
+    def test_env_admin_bootstrap_creates_admin_when_missing(self):
+        with patch.object(panel_store, "admin_exists", return_value=False), \
+             patch.object(panel_store, "create_user") as create, \
+             patch.dict(os.environ,
+                        {"AM4_ADMIN_USERNAME": "root", "AM4_ADMIN_PASSWORD": "root123"},
+                        clear=False):
+            server._bootstrap_admin_from_env()
+        create.assert_called_once_with(
+            "root", "root123", is_admin=True, status="active")
+
+    def test_env_admin_bootstrap_skips_without_credentials(self):
+        with patch.object(panel_store, "admin_exists", return_value=False), \
+             patch.object(panel_store, "create_user") as create, \
+             patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("AM4_ADMIN_USERNAME", None)
+            os.environ.pop("AM4_ADMIN_PASSWORD", None)
+            server._bootstrap_admin_from_env()
+        create.assert_not_called()
+
     def test_unknown_balance_rejects_new_purchase_after_readonly_lookup(self):
         planner = Mock()
         planner.DEFAULT_COST_INDEX = 200

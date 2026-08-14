@@ -704,6 +704,26 @@ def _current_operation_settings() -> dict:
     return _loop_account_settings
 
 
+def _bootstrap_admin_from_env() -> None:
+    """启动时若 .env 配置了管理员（AM4_ADMIN_USERNAME/PASSWORD）
+    且账号库中尚无管理员，自动创建，免去访问 /setup。"""
+    try:
+        if panel_store.admin_exists():
+            return
+        username = os.environ.get("AM4_ADMIN_USERNAME", "").strip()
+        password = os.environ.get("AM4_ADMIN_PASSWORD", "")
+        if not username or not password:
+            return
+        try:
+            panel_store.create_user(username, password, is_admin=True, status="active")
+        except ValueError as exc:
+            _append_log(f"⚠ .env 管理员创建失败：{exc}")
+            return
+        _append_log(f"👑 已从 .env 创建管理员 {username}")
+    except Exception:
+        pass
+
+
 def _market_retry_failure(message: str) -> int:
     """记录市场刷新失败并返回退避秒数（60/120/300/600，最高10分钟）。"""
     key = _session_cache_key()
@@ -4226,6 +4246,7 @@ def api_stop():
 # 所有调度器会调用的辅助函数和路由均已定义后，再恢复任务并启动线程。
 _load_pending_tasks()
 _loop_account_settings = _load_settings_for_email(_active_credentials()[0])
+_bootstrap_admin_from_env()
 if os.environ.get("AM4_DISABLE_SCHEDULER", "").strip() != "1":
     threading.Thread(target=_pending_scheduler_loop, daemon=True).start()
 
