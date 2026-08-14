@@ -4562,7 +4562,7 @@ def _runner(run: dict) -> None:
     seen_aircraft_ids: set[str] = set()
     try:
         script = str(Path(__file__).resolve().parent / "collector.py")
-        args = [sys.executable, script]
+        args = [sys.executable, "-u", script]
         if run["mode"] in {"loop", "loop_resume"}:
             args.append("--loop")
         elif run["mode"] == "light":
@@ -4573,6 +4573,7 @@ def _runner(run: dict) -> None:
         env["AM4_PASSWORD"] = run.get("password", "")
         env.update(panel_store.settings_to_env(run.get("settings") or {}))
         env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
             args,
             cwd=str(ROOT),

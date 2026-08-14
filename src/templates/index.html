@@ -66,6 +66,7 @@ td{padding:8px 12px;border-bottom:1px solid rgba(128,128,128,.15);white-space:no
 .maint-line .w{color:var(--dg);margin-left:6px}
 .maint-break{border-top:1px dashed var(--brd);margin:4px 0}
 .tabs{display:flex;gap:0;border-bottom:2px solid var(--brd)}
+@media(max-width:768px){.tabs{overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}.tabs::-webkit-scrollbar{display:none}.tab{flex:0 0 auto;white-space:nowrap}}
 .tab-content{margin-top:16px}
 .tab{padding:10px 20px;cursor:pointer;font-weight:600;font-size:.9rem;color:var(--t2);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s}.tab.active{color:var(--ac);border-bottom-color:var(--ac)}.tab:hover{color:var(--t)}
 .console{background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:12px;max-height:300px;overflow-y:auto;font-family:Consolas,monospace;font-size:.8rem;line-height:1.6;color:var(--t2);white-space:pre-wrap;word-break:break-all}
