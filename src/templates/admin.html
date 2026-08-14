@@ -27,8 +27,10 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 .u-name{font-weight:700;font-size:1rem}
 .u-mail{font-size:.82rem;color:var(--t2);min-width:0}
 .u-time{font-size:.75rem;color:var(--t3)}
-.u-ops{display:flex;flex-direction:column;gap:6px;flex-shrink:0}
-.u-ops button{padding:6px 10px;font-size:.78rem}
+.u-ops{display:flex;flex-direction:row;gap:6px;align-items:center;flex-shrink:1;min-width:0;
+  max-width:100%;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.u-ops::-webkit-scrollbar{display:none}
+.u-ops button{flex:0 0 auto;padding:6px 10px;font-size:.78rem;white-space:nowrap}
 .mail-cell{display:block;max-width:200px;overflow-x:auto;white-space:nowrap;
   scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .mail-cell::-webkit-scrollbar{display:none}
