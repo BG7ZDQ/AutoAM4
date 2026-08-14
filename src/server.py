@@ -228,6 +228,8 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     # 部署在 HTTPS 后置 AM4_COOKIE_SECURE=1；本地 http 调试保持 0
     SESSION_COOKIE_SECURE=os.environ.get("AM4_COOKIE_SECURE", "0") == "1",
+    # 模板改动即时生效，无需重启（开发期）
+    TEMPLATES_AUTO_RELOAD=True,
 )
 
 import panel_store
