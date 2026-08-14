@@ -1871,7 +1871,8 @@ def _run_pending_task(task: dict) -> None:
         else:
             msg = f"🔧 {reg} 未要求改装，跳过"
             _append_log(msg)
-            _broadcast_sse({"type": "log", "line": msg})
+            _broadcast_sse({"type": "log", "line": msg,
+                            "account": _session_account().get("email", "")})
             task["error"] = None
         task["status"] = "done"
         # 改装完成（按真实安装时间 + 2 分钟缓冲）后排起飞；若飞机还没就绪，5 分钟后重试
@@ -2038,7 +2039,8 @@ def _run_pending_task(task: dict) -> None:
             )
         msg = f"🛫 {reg} 已放行（航线{route_id}，CI{ci}）"
         _append_log(msg)
-        _broadcast_sse({"type": "log", "line": msg})
+        _broadcast_sse({"type": "log", "line": msg,
+                        "account": _session_account().get("email", "")})
         return
 
     # 未知任务类型：标记失败
@@ -2417,10 +2419,15 @@ def _broadcast_operation_statuses(status_map: dict | None,
 
 def _broadcast_operation_status(reg: str, state: str, until: float = 0,
                                 fid: str = "") -> None:
+    try:
+        acct_email = _session_account().get("email", "")
+    except Exception:
+        acct_email = ""
     _broadcast_sse({
         "type": "fleet_status",
         "data": [{"fid": str(fid), "reg": str(reg),
                   "state": state, "until": float(until or 0)}],
+        "account": acct_email,
     })
 
 
@@ -2813,7 +2820,11 @@ def _broadcast_sse(data: dict):
 def _publish_log(line: str) -> None:
     """写入运行日志并立即推送到前端，供交互操作共用。"""
     _append_log(line)
-    _broadcast_sse({"type": "log", "line": line})
+    try:
+        acct_email = _session_account().get("email", "")
+    except Exception:
+        acct_email = ""
+    _broadcast_sse({"type": "log", "line": line, "account": acct_email})
 
 
 _ROUTE_STEP_LABELS = {
@@ -2937,22 +2948,28 @@ def api_status():
 def api_stream():
     q = queue.Queue(maxsize=200)  # 有界：慢/死连接不无限累积
     _sse_clients.append(q)
+    # 生成器在响应迭代时才执行（此时已脱离请求上下文），
+    # 因此所有依赖 session/g 的账号相关值必须在此（请求上下文内）先算好。
+    try:
+        lines = _read_log_lines()
+    except Exception:
+        lines = []
+    _log_total = len(lines)
+    with _maint_cache_lock:
+        _maint_init = _maint_cache.get(_session_cache_key())
+    runs = _runs_payload()
+    account_email = _session_account().get("email", "")
+    own = next((r for r in runs if normalize_account(r["account"]) == normalize_account(
+        account_email)), None)
 
     def generate():
         try:
             # 发送初始化：包含最近日志（从磁盘读取）
-            lines = _read_log_lines()
-            _log_total = len(lines)
-            with _maint_cache_lock:
-                _maint_init = _maint_cache.get(_session_cache_key())
-            runs = _runs_payload()
-            own = next((r for r in runs if normalize_account(r["account"]) == normalize_account(
-                _session_account().get("email") or _active_credentials()[0])), None)
             initial = {
                 "type": "init",
                 "running": any(r["running"] for r in runs),
                 "mode": "loop" if any(r["running"] for r in runs) else "",
-                "account": _session_account().get("email", ""),
+                "account": account_email,
                 "runs": runs,
                 "log": lines[-50:],  # 最近50条，更早的可上翻滚动加载
                 "log_start": max(0, _log_total - 50),
