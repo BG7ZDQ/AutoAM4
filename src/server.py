@@ -4880,6 +4880,8 @@ def _runner(run: dict) -> None:
             if (not run.get("stop_requested") and not run["error"]
                     and proc.returncode not in (0, -15)):
                 run["error"] = f"脚本退出码: {proc.returncode}"
+            _append_log(f"脚本进程已退出（code {proc.returncode}）",
+                        paths=run_paths)
     except Exception as e:
         run["error"] = str(e)
     finally:
