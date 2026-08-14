@@ -44,6 +44,7 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 <div class="top">
   <h1>🛠 管理员面板</h1>
   <span class="sp"></span>
+  <span id="runSummary" style="font-size:.82rem;color:var(--t3)"></span>
   <button class="btn-ghost" onclick="changeMyPwd()">修改密码</button>
   <button class="btn-ghost" onclick="logout()">退出</button>
 </div>
@@ -125,7 +126,17 @@ function enter(id){
 function logout(){
   api('/api/logout',{method:'POST'}).then(()=>location.href='/login');
 }
+function loadRunSummary(){
+  api('/api/status').then(d=>{
+    const el=document.getElementById('runSummary');
+    if(!el)return;
+    const running=(d.runs||[]).filter(x=>x.running);
+    el.textContent=running.length?('🔁 '+running.length+' 个循环运行中'):'';
+  }).catch(()=>{});
+}
 loadUsers();
+loadRunSummary();
+setInterval(loadRunSummary,30000);
 </script>
 </body>
 </html>
