@@ -25,6 +25,8 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 .u-info{min-width:0;display:flex;flex-direction:column;gap:6px}
 .u-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .u-name{font-weight:700;font-size:1rem}
+.run-dot{width:8px;height:8px;border-radius:50%;background:var(--t3);display:inline-block;flex-shrink:0}
+.run-dot.on{background:var(--ok)}
 .u-mail{font-size:.82rem;color:var(--t2);min-width:0}
 .u-time{font-size:.75rem;color:var(--t3)}
 .ops-btn{margin-left:auto}
@@ -44,13 +46,30 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 <div class="top">
   <h1>🛠 管理员面板</h1>
   <span class="sp"></span>
-  <span id="runSummary" style="font-size:.82rem;color:var(--t3)"></span>
-  <button class="btn-ghost" onclick="changeMyPwd()">修改密码</button>
+  <button class="btn-ghost" onclick="openPwdModal()">密码</button>
   <button class="btn-ghost" onclick="logout()">退出</button>
 </div>
 <div class="card">
   <h3>用户与账号</h3>
   <div id="ub" class="user-cards"></div>
+</div>
+<div id="pwdModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:20px;width:min(92vw,380px)">
+    <h3 style="margin-bottom:12px">🔑 密码管理</h3>
+    <label style="display:block;font-size:.85rem;color:var(--t3);margin:8px 0 4px">目标用户</label>
+    <select id="pwdTarget" style="width:100%;padding:8px;border:1px solid var(--brd);border-radius:8px;background:var(--card);color:var(--t)" onchange="toggleOld()"></select>
+    <div id="pwdOldWrap" style="display:none">
+      <label style="display:block;font-size:.85rem;color:var(--t3);margin:8px 0 4px">当前密码（改自己时需要）</label>
+      <input id="pwdOld" type="password" style="width:100%;padding:8px;border:1px solid var(--brd);border-radius:8px;background:var(--card);color:var(--t)">
+    </div>
+    <label style="display:block;font-size:.85rem;color:var(--t3);margin:8px 0 4px">新密码（至少 6 位）</label>
+    <input id="pwdNew" type="password" style="width:100%;padding:8px;border:1px solid var(--brd);border-radius:8px;background:var(--card);color:var(--t)">
+    <div id="pwdMsg" style="font-size:.8rem;color:var(--t3);margin-top:8px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn-ghost" onclick="closePwdModal()">取消</button>
+      <button class="btn-pri" onclick="submitPwd()">确定</button>
+    </div>
+  </div>
 </div>
 <script>
 const CSRF = "{{ csrf_token }}";
@@ -74,10 +93,10 @@ function loadUsers(){
         if(u.status==='disabled')ops+='<button class="btn-ok" onclick="setStatus('+u.id+',\'active\')">启用</button>';
         ops+='<button class="btn-err" onclick="delUser('+u.id+')">删除</button>';
       }
-      ops+='<button class="btn-warn" onclick="resetPwd('+u.id+',\''+esc(u.username)+'\')">重置密码</button>';
       return '<div class="user-card">'+
         '<div class="u-info">'+
-          '<div class="u-top"><span class="u-name">'+esc(u.username)+'</span>'+
+          '<div class="u-top"><span class="run-dot" data-acct="'+esc(u.am4_email||'')+'" title="运行状态"></span>'+
+          '<span class="u-name">'+esc(u.username)+'</span>'+
           '<span class="badge '+(u.is_admin?'admin':'')+'">'+role+'</span>'+
           '<span class="badge '+st+'">'+esc(u.status)+'</span>'+
           (ops?'<button class="btn-ghost ops-btn" onclick="toggleOps(this)">⚙ 操作</button>':'')+
@@ -88,6 +107,7 @@ function loadUsers(){
         (ops?'<div class="u-ops">'+ops+'</div>':'')+
         '</div>';
     }).join('');
+    loadRuns();
   });
 }
 function setStatus(id,status){
@@ -98,22 +118,64 @@ function delUser(id){
   if(!confirm('确定删除该用户及其账号数据？')) return;
   api('/api/admin/users/'+id,{method:'DELETE'}).then(d=>{ if(d.ok) loadUsers(); else alert(d.msg); });
 }
-function resetPwd(id,name){
-  const pwd=prompt('为「'+name+'」设置新登录密码（至少 6 位）：');
-  if(pwd===null||pwd==='')return;
-  if(pwd.length<6){ alert('密码至少 6 个字符'); return; }
-  api('/api/admin/users/'+id+'/password',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({password:pwd})}).then(d=>{ if(d.ok) alert('密码已重置'); else alert(d.msg); });
+let _pwdUsers=[];
+function openPwdModal(){
+  api('/api/admin/users').then(d=>{
+    if(!d.ok)return;
+    _pwdUsers=d.users||[];
+    const sel=document.getElementById('pwdTarget');
+    sel.replaceChildren();
+    _pwdUsers.forEach(u=>{
+      const o=document.createElement('option');
+      o.value=u.id;
+      o.textContent=u.username+(u.is_admin?'（管理员）':'');
+      sel.append(o);
+    });
+    const me=_pwdUsers.find(u=>u.is_admin);
+    if(me)sel.value=me.id;
+    document.getElementById('pwdOld').value='';
+    document.getElementById('pwdNew').value='';
+    document.getElementById('pwdMsg').textContent='';
+    document.getElementById('pwdMsg').style.color='var(--t3)';
+    toggleOld();
+    document.getElementById('pwdModal').style.display='flex';
+  }).catch(()=>{});
 }
-function changeMyPwd(){
-  const oldPwd=prompt('请输入当前密码：');
-  if(oldPwd===null||oldPwd==='')return;
-  const newPwd=prompt('请输入新密码（至少 6 位）：');
-  if(newPwd===null||newPwd==='')return;
-  if(newPwd.length<6){ alert('密码至少 6 个字符'); return; }
-  api('/api/admin/password',{method:'PUT',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({old_password:oldPwd,new_password:newPwd})})
-    .then(d=>{ if(d.ok) alert('密码已修改，下次登录生效'); else alert(d.msg); });
+function toggleOld(){
+  const sel=document.getElementById('pwdTarget');
+  const target=_pwdUsers.find(u=>String(u.id)===String(sel.value));
+  document.getElementById('pwdOldWrap').style.display=target&&target.is_admin?'block':'none';
+}
+function closePwdModal(){document.getElementById('pwdModal').style.display='none'}
+function submitPwd(){
+  const sel=document.getElementById('pwdTarget');
+  const target=_pwdUsers.find(u=>String(u.id)===String(sel.value));
+  const msg=document.getElementById('pwdMsg');
+  if(!target){msg.textContent='请选择目标用户';return}
+  const newPwd=document.getElementById('pwdNew').value;
+  if(newPwd.length<6){msg.textContent='密码至少 6 个字符';msg.style.color='var(--err)';return}
+  const isSelf=!!target.is_admin;
+  const body=isSelf
+    ? {old_password:document.getElementById('pwdOld').value,new_password:newPwd}
+    : {password:newPwd};
+  const url=isSelf?'/api/admin/password':'/api/admin/users/'+target.id+'/password';
+  const method=isSelf?'PUT':'POST';
+  api(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(d=>{
+      msg.style.color=d.ok?'var(--ok)':'var(--err)';
+      msg.textContent=d.msg||(d.ok?'成功':'失败');
+      if(d.ok)setTimeout(closePwdModal,1200);
+    });
+}
+function loadRuns(){
+  api('/api/status').then(d=>{
+    const running=new Set((d.runs||[]).filter(x=>x.running)
+      .map(x=>String(x.account||'').toLowerCase()));
+    document.querySelectorAll('.run-dot').forEach(dot=>{
+      const acct=String(dot.getAttribute('data-acct')||'').toLowerCase();
+      dot.classList.toggle('on',running.has(acct));
+    });
+  }).catch(()=>{});
 }
 function toggleOps(btn){
   var card=btn.closest('.user-card'), ops=card?card.querySelector('.u-ops'):null;
@@ -126,17 +188,9 @@ function enter(id){
 function logout(){
   api('/api/logout',{method:'POST'}).then(()=>location.href='/login');
 }
-function loadRunSummary(){
-  api('/api/status').then(d=>{
-    const el=document.getElementById('runSummary');
-    if(!el)return;
-    const running=(d.runs||[]).filter(x=>x.running);
-    el.textContent=running.length?('🔁 '+running.length+' 个循环运行中'):'';
-  }).catch(()=>{});
-}
 loadUsers();
-loadRunSummary();
-setInterval(loadRunSummary,30000);
+loadRuns();
+setInterval(loadRuns,30000);
 </script>
 </body>
 </html>
