@@ -21,14 +21,11 @@ button.ghost{background:transparent;border:1px solid var(--brd);color:var(--t)}
 <body>
 <div class="card">
   <h1>🔒 需要管理员权限</h1>
-  <p>当前登录的是 <b id="uname"></b>，没有管理员权限。<br>请使用管理员账号登录后访问管理面板。</p>
+  <p>当前登录的是 <b>{{ username }}</b>，没有管理员权限。<br>请使用管理员账号登录后访问管理面板。</p>
   <div>
     <button class="ghost" onclick="location.href='/'">返回我的面板</button>
     <button onclick="location.href='/login'">切换管理员账号</button>
   </div>
 </div>
-<script>
-document.getElementById('uname').textContent = {{ username|tojson }};
-</script>
 </body>
 </html>

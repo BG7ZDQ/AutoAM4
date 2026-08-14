@@ -16,7 +16,6 @@ p{color:var(--t3);font-size:.88rem;margin-bottom:22px}
 .row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 button{padding:11px 18px;border:0;border-radius:9px;background:var(--pri);color:#fff;font-size:.95rem;cursor:pointer}
 button.ghost{background:transparent;border:1px solid var(--brd);color:var(--t)}
-.hint{margin-top:16px;font-size:.78rem;color:var(--t3)}
 </style>
 </head>
 <body>
@@ -27,7 +26,6 @@ button.ghost{background:transparent;border:1px solid var(--brd);color:var(--t)}
     <button onclick="location.href='/admin'">🛠 进入管理面板</button>
     <button class="ghost" onclick="logout()">退出登录</button>
   </div>
-  <div class="hint">审核注册、停用/删除用户、模拟进入账号，都在管理面板完成。</div>
 </div>
 <script>
 const CSRF = "{{ csrf_token }}";

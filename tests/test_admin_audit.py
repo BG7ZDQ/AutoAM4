@@ -52,6 +52,22 @@ class AdminAuditTests(unittest.TestCase):
                 headers={"X-CSRF-Token": server._csrf_token})
         self.assertEqual(resp.status_code, 403)
 
+    def test_denied_page_shows_current_username(self):
+        uid = panel_store.create_user(
+            "viewer1", "viewer-pass-1", am4_email="viewer1@example.com",
+            status="active")
+        try:
+            with patch.object(server, "_effective_user",
+                              return_value=panel_store.get_user_by_id(uid)), \
+                 server.app.test_client() as client:
+                resp = client.get("/admin")
+            self.assertEqual(resp.status_code, 403)
+            body = resp.get_data(as_text=True)
+            self.assertIn("需要管理员权限", body)
+            self.assertIn("viewer1", body)
+        finally:
+            panel_store.delete_user(uid)
+
     def test_rotate_and_cleanup_old_logs(self):
         tmp = Path(tempfile.mkdtemp())
         audit = tmp / "admin_audit.log"
