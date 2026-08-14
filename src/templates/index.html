@@ -746,7 +746,7 @@ function renderMaint(d){
   document.getElementById('mnCount').textContent='('+w.length+' 架需检修)'
   document.getElementById('mi').textContent='共 '+w.length+' 架需检修 · 更新 '+(d['updated_at']||'--')
 }
-async function run(mode){try{let r=await api('/api/run',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},body:JSON.stringify({mode})});if(!r.ok)alert(r.msg);else document.getElementById('lr').textContent=new Date().toLocaleString('zh-CN')}catch(e){alert('请求失败: '+e.message)}}
-async function stop(){try{let r=await api('/api/stop',{method:'POST',headers:{'X-CSRF-Token':CSRF}});if(!r.ok)alert(r.msg)}catch(e){alert('请求失败: '+e.message)}}
+async function run(mode){try{let r=await api('/api/run',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},body:JSON.stringify({mode})});if(!r.ok)alert(r.msg);else{document.getElementById('lr').textContent=new Date().toLocaleString('zh-CN');uc(true);ub(true,mode);atg()}}catch(e){alert('请求失败: '+e.message)}}
+async function stop(){try{let r=await api('/api/stop',{method:'POST',headers:{'X-CSRF-Token':CSRF}});if(!r.ok)alert(r.msg);else{uc(false);ub(false,'');atg()}}catch(e){alert('请求失败: '+e.message)}}
 function eh(s){let d=document.createElement('div');d.textContent=s||'';return d.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 </script></body></html>

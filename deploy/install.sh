@@ -65,8 +65,16 @@ MAX_LOOPS=3
 PORT=5000
 
 ask APP_DIR "应用安装目录" "$APP_DIR"
+if [[ "$APP_DIR" != /* ]]; then
+  echo "应用安装目录必须是绝对路径（如 /opt/am4/app）" >&2
+  exit 1
+fi
 BASE_DIR="$(dirname "$APP_DIR")"
 ask SVC_USER "系统服务用户" "$SVC_USER"
+if ! [[ "$SVC_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+  echo "服务用户名只能包含小写字母、数字、_、-，且以字母或 _ 开头" >&2
+  exit 1
+fi
 
 while [[ -z "$DOMAIN" ]]; do
   ask DOMAIN "面板域名（如 am4.example.com）"
@@ -125,6 +133,18 @@ fi
 ask PROTECTED "受保护账号（逗号分隔，可留空）"
 ask SSE_CLIENTS "SSE 实时连接数上限" "$SSE_CLIENTS"
 ask MAX_LOOPS "全局并发循环数上限" "$MAX_LOOPS"
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
+  echo "端口必须是 1024~65535 的整数" >&2
+  exit 1
+fi
+if ! [[ "$SSE_CLIENTS" =~ ^[0-9]+$ ]] || (( SSE_CLIENTS < 1 || SSE_CLIENTS > 1000 )); then
+  echo "SSE 连接数必须是 1~1000 的整数" >&2
+  exit 1
+fi
+if ! [[ "$MAX_LOOPS" =~ ^[0-9]+$ ]] || (( MAX_LOOPS < 1 || MAX_LOOPS > 100 )); then
+  echo "并发循环数必须是 1~100 的整数" >&2
+  exit 1
+fi
 
 SETUP_TOKEN="$(gen_token)"
 COOKIE_SECURE=0
@@ -196,55 +216,37 @@ mkdir -p "$APP_DIR/src" "$APP_DIR/data"
 printf '%s\n' "$(gen_token)" > "$APP_DIR/src/.session_secret"
 printf '%s\n' "$(gen_token)" > "$APP_DIR/src/.service_token"
 
-cat > "$APP_DIR/.env" <<ENVEOF
-# 由 deploy/install.sh 生成；包含凭据与令牌，仅服务用户可读
-ENVEOF
-if [[ -n "$AM4_EMAIL" ]]; then
-  cat >> "$APP_DIR/.env" <<ENVEOF
-
-# ---- AM4 游戏账号 ----
-AM4_EMAIL=$AM4_EMAIL
-AM4_PASSWORD=$AM4_PASSWORD
-ENVEOF
-fi
-cat >> "$APP_DIR/.env" <<ENVEOF
-
-# ---- 运营参数（可在面板「设置」按账号覆盖）----
-AM4_COST_INDEX=200
-AM4_MIN_FUEL=200000
-AM4_CASH_RESERVE=5000000
-AM4_MAX_RESOURCE_SPEND=25000000
-AM4_FUEL_BUY_BELOW=500
-AM4_CO2_BUY_BELOW=125
-AM4_MIN_A_CHECK_HOURS=5
-AM4_MAX_WEAR_FOR_TAKEOFF=80
-AM4_AUTO_MARKETING=1
-AM4_AUTO_BUY_FUEL=1
-AM4_AUTO_BUY_CO2=1
-AM4_AUTO_TAKEOFF=1
-
-# ---- 服务与安全 ----
-AM4_COOKIE_SECURE=$COOKIE_SECURE
-AM4_TRUST_PROXY=1
-AM4_MAX_CONCURRENT_LOOPS=$MAX_LOOPS
-AM4_MAX_SSE_CLIENTS=$SSE_CLIENTS
-AM4_DEBUG_TEMPLATES=0
-AM4_DISABLE_SCHEDULER=0
-AM4_PROTECTED_ACCOUNTS=$PROTECTED
-
-# ---- 面板初始化 ----
-AM4_SETUP_TOKEN=$SETUP_TOKEN
-ENVEOF
-if [[ -n "$ADMIN_USER" ]]; then
-  cat >> "$APP_DIR/.env" <<ENVEOF
-AM4_ADMIN_USERNAME=$ADMIN_USER
-AM4_ADMIN_PASSWORD=$ADMIN_PASS
-ENVEOF
-fi
+# 用 printf 逐行写入：值只做一次 shell 展开，$、反引号等字符按原样落盘，
+# 避免密码/输入中的 $(...) 被再次求值造成命令注入。
+{
+  printf '%s\n' "# 由 deploy/install.sh 生成；包含凭据与令牌，仅服务用户可读"
+  if [[ -n "$AM4_EMAIL" ]]; then
+    printf '%s\n' "" "# ---- AM4 游戏账号 ----" \
+      "AM4_EMAIL=$AM4_EMAIL" "AM4_PASSWORD=$AM4_PASSWORD"
+  fi
+  printf '%s\n' "" "# ---- 运营参数（可在面板「设置」按账号覆盖）----" \
+    "AM4_COST_INDEX=200" "AM4_MIN_FUEL=200000" \
+    "AM4_CASH_RESERVE=5000000" "AM4_MAX_RESOURCE_SPEND=25000000" \
+    "AM4_FUEL_BUY_BELOW=500" "AM4_CO2_BUY_BELOW=125" \
+    "AM4_MIN_A_CHECK_HOURS=5" "AM4_MAX_WEAR_FOR_TAKEOFF=80" \
+    "AM4_AUTO_MARKETING=1" "AM4_AUTO_BUY_FUEL=1" \
+    "AM4_AUTO_BUY_CO2=1" "AM4_AUTO_TAKEOFF=1" \
+    "" "# ---- 服务与安全 ----" \
+    "AM4_COOKIE_SECURE=$COOKIE_SECURE" "AM4_TRUST_PROXY=1" \
+    "AM4_MAX_CONCURRENT_LOOPS=$MAX_LOOPS" "AM4_MAX_SSE_CLIENTS=$SSE_CLIENTS" \
+    "AM4_DEBUG_TEMPLATES=0" "AM4_DISABLE_SCHEDULER=0" \
+    "AM4_PROTECTED_ACCOUNTS=$PROTECTED" \
+    "" "# ---- 面板初始化 ----" \
+    "AM4_SETUP_TOKEN=$SETUP_TOKEN"
+  if [[ -n "$ADMIN_USER" ]]; then
+    printf '%s\n' "AM4_ADMIN_USERNAME=$ADMIN_USER" "AM4_ADMIN_PASSWORD=$ADMIN_PASS"
+  fi
+} > "$APP_DIR/.env"
 umask 022
 
 chown -R "$SVC_USER":"$SVC_USER" "$APP_DIR"
 chmod 700 "$APP_DIR/data" "$BASE_DIR/tmp"
+chown "$SVC_USER":"$SVC_USER" "$BASE_DIR/tmp"
 chmod 600 "$APP_DIR/.env" "$APP_DIR/src/.session_secret" "$APP_DIR/src/.service_token"
 
 # ---------------------------------------------------------------- Python 环境
@@ -344,43 +346,49 @@ if [[ "$HTTPS_MODE" == "certbot" ]]; then
     CERTBOT_ARGS+=(--register-unsafely-without-email)
   fi
   if ! certbot "${CERTBOT_ARGS[@]}"; then
-    echo "⚠ 证书签发失败，面板暂时以 HTTP 提供；请确认域名解析后运行：certbot --nginx -d $DOMAIN" >&2
+    # 证书失败但服务仍要启动：回退 Secure Cookie 标记，否则 HTTPS-only Cookie
+    # 在 HTTP 下不会发送，登录将完全不可用。
+    COOKIE_SECURE=0
+    sed -i 's/^AM4_COOKIE_SECURE=.*/AM4_COOKIE_SECURE=0/' "$APP_DIR/.env"
+    echo "⚠ 证书签发失败，面板暂时以 HTTP 提供（已回退会话 Cookie 为兼容 HTTP）；" \
+      "请确认域名解析后运行：certbot --nginx -d $DOMAIN，随后把 AM4_COOKIE_SECURE 改回 1" >&2
   fi
 fi
 
 # ---------------------------------------------------------------- systemd
-cat > /etc/systemd/system/am4.service <<UNITEOF
-[Unit]
-Description=AM4 fleet dashboard and scheduler
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$SVC_USER
-Group=$SVC_USER
-WorkingDirectory=$APP_DIR
-Environment=AM4_PORT=$PORT
-Environment=TEMP=$BASE_DIR/tmp
-Environment=PYTHONUNBUFFERED=1
-Environment=AM4_COOKIE_SECURE=$COOKIE_SECURE
-Environment=AM4_MAX_SSE_CLIENTS=$SSE_CLIENTS
-Environment=AM4_TRUST_PROXY=1
-ExecStart=$APP_DIR/.venv/bin/gunicorn --chdir $APP_DIR/src --bind 127.0.0.1:$PORT --workers 1 --threads 8 --timeout 900 --access-logfile - --error-logfile - server:app
-ExecStartPost=$APP_DIR/.venv/bin/python $APP_DIR/deploy/start_loop.py
-Restart=on-failure
-RestartSec=10
-TimeoutStartSec=45
-TimeoutStopSec=30
-KillMode=control-group
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ReadWritePaths=$BASE_DIR
-
-[Install]
-WantedBy=multi-user.target
-UNITEOF
+{
+  printf '%s\n' \
+    "[Unit]" \
+    "Description=AM4 fleet dashboard and scheduler" \
+    "After=network-online.target" \
+    "Wants=network-online.target" \
+    "" \
+    "[Service]" \
+    "Type=simple" \
+    "User=$SVC_USER" \
+    "Group=$SVC_USER" \
+    "WorkingDirectory=$APP_DIR" \
+    "Environment=AM4_PORT=$PORT" \
+    "Environment=TEMP=$BASE_DIR/tmp" \
+    "Environment=PYTHONUNBUFFERED=1" \
+    "Environment=AM4_COOKIE_SECURE=$COOKIE_SECURE" \
+    "Environment=AM4_MAX_SSE_CLIENTS=$SSE_CLIENTS" \
+    "Environment=AM4_TRUST_PROXY=1" \
+    "ExecStart=$APP_DIR/.venv/bin/gunicorn --chdir $APP_DIR/src --bind 127.0.0.1:$PORT --workers 1 --threads 16 --timeout 900 --access-logfile - --error-logfile - server:app" \
+    "ExecStartPost=$APP_DIR/.venv/bin/python $APP_DIR/deploy/start_loop.py" \
+    "Restart=on-failure" \
+    "RestartSec=10" \
+    "TimeoutStartSec=45" \
+    "TimeoutStopSec=30" \
+    "KillMode=control-group" \
+    "NoNewPrivileges=true" \
+    "PrivateTmp=true" \
+    "ProtectSystem=full" \
+    "ReadWritePaths=$BASE_DIR" \
+    "" \
+    "[Install]" \
+    "WantedBy=multi-user.target"
+} > /etc/systemd/system/am4.service
 
 systemctl daemon-reload
 systemctl enable --now am4.service

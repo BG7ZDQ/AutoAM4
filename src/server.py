@@ -1159,6 +1159,52 @@ def _read_log_lines() -> list[str]:
     return []
 
 
+_log_history_cache: dict[str, tuple[tuple, list[str]]] = {}
+_log_history_lock = threading.Lock()
+
+
+def _read_log_history(paths: dict) -> list[str]:
+    """合并该账号全部日志：历史 .bak（旧→新）+ 当前 run_log.txt。
+
+    轮转后的旧内容仍可通过面板上翻与原始日志下载读到。
+    """
+    log_path = paths["log"]
+    directory = log_path.parent
+    files: list[Path] = []
+    try:
+        if directory.exists():
+            files = sorted(
+                [p for p in directory.glob("run_log_*.txt.bak")],
+                key=lambda p: p.stat().st_mtime,
+            )
+    except Exception:
+        pass
+    files.append(log_path)
+    try:
+        sig = tuple(
+            (p.name, p.stat().st_mtime, p.stat().st_size)
+            for p in files if p.exists()
+        )
+    except Exception:
+        sig = ()
+    cache_key = str(directory)
+    with _log_history_lock:
+        cached = _log_history_cache.get(cache_key)
+        if cached and cached[0] == sig:
+            return cached[1]
+    lines: list[str] = []
+    for p in files:
+        try:
+            if p.exists():
+                lines.extend(
+                    p.read_text(encoding="utf-8", errors="replace").splitlines())
+        except Exception:
+            continue
+    with _log_history_lock:
+        _log_history_cache[cache_key] = (sig, lines)
+    return lines
+
+
 def _rotate_run_log(path: Path | None = None) -> None:
     """明确开始一轮新运行时备份并清空日志；服务重启本身不再截断日志。"""
     try:
@@ -3476,7 +3522,7 @@ def api_stream():
     # 生成器在响应迭代时才执行（此时已脱离请求上下文），
     # 因此所有依赖 session/g 的账号相关值必须在此（请求上下文内）先算好。
     try:
-        lines = _read_log_lines()
+        lines = _read_log_history(_paths())
     except Exception:
         lines = []
     _log_total = len(lines)
@@ -3547,7 +3593,7 @@ def api_log():
     except ValueError:
         limit = 100
     limit = max(1, min(limit, 500))
-    lines = _read_log_lines()
+    lines = _read_log_history(_paths())
     total = len(lines)
     start = max(0, min(offset, total))
     slice_lines = lines[max(0, start - limit):start]
@@ -3557,7 +3603,7 @@ def api_log():
 @app.route("/api/log/download")
 def api_log_download():
     """下载原始完整日志（run_log.txt）。"""
-    text = "\n".join(_read_log_lines())
+    text = "\n".join(_read_log_history(_paths()))
     return Response(
         text,
         mimetype="text/plain; charset=utf-8",
@@ -4337,7 +4383,7 @@ def api_run():
         targets = _resume_loop_targets()
         started, errors = [], []
         for email, password, settings in targets:
-            ok, msg = _start_loop(email, password, settings, mode="loop")
+            ok, msg = _start_loop(email, password, settings, mode="loop_resume")
             if ok:
                 started.append(email)
             else:
