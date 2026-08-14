@@ -16,29 +16,22 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 .btn-pri{background:var(--pri)}.btn-ok{background:var(--ok)}.btn-warn{background:var(--warn)}
 .btn-err{background:var(--err)}.btn-ghost{background:#eef1f7;color:var(--t)}
 .card{background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:16px;margin-bottom:16px}
-table{width:100%;border-collapse:collapse;font-size:.9rem}
-th,td{padding:9px 8px;text-align:left;border-bottom:1px solid var(--brd);vertical-align:middle}
-th{color:var(--t3);font-weight:500;white-space:nowrap}
 .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.75rem}
 .badge.active{background:#dcfce7;color:var(--ok)}.badge.pending{background:#fef3c7;color:var(--warn)}
 .badge.disabled{background:#fee2e2;color:var(--err)}.badge.admin{background:#dbeafe;color:var(--pri)}
-.ops{display:flex;gap:6px;flex-wrap:wrap}
-.ops button{padding:5px 9px;font-size:.78rem}
-.ops-toggle{display:none}
-.note{color:var(--t3);font-size:.85rem;margin-top:8px}
-.mail-cell{display:block;max-width:150px;overflow-x:auto;white-space:nowrap;
+.user-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.user-card{background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:14px;
+  display:flex;flex-direction:column;gap:8px}
+.u-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.u-name{font-weight:700;font-size:1rem}
+.u-mail{font-size:.82rem;color:var(--t2);min-width:0}
+.u-time{font-size:.75rem;color:var(--t3)}
+.u-ops{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px;padding-top:8px;border-top:1px dashed var(--brd)}
+.u-ops button{padding:6px 10px;font-size:.78rem}
+.mail-cell{display:block;max-width:200px;overflow-x:auto;white-space:nowrap;
   scrollbar-width:none;-webkit-overflow-scrolling:touch}
 .mail-cell::-webkit-scrollbar{display:none}
-@media(max-width:768px){
-  table thead th:nth-child(1),table tbody td:nth-child(1),
-  table thead th:nth-child(5),table tbody td:nth-child(5),
-  table thead th:nth-child(6),table tbody td:nth-child(6){display:none}
-  .ops{display:none;flex-direction:column;gap:5px;margin-top:6px;width:max-content}
-  .ops.open{display:flex}
-  .ops-toggle{display:inline-flex}
-  .card{padding:10px}
-  th,td{padding:6px 6px;font-size:.8rem}
-}
+@media(max-width:480px){.user-cards{grid-template-columns:1fr}.card{padding:10px}}
 </style>
 </head>
 <body>
@@ -49,12 +42,7 @@ th{color:var(--t3);font-weight:500;white-space:nowrap}
 </div>
 <div class="card">
   <h3>用户与账号</h3>
-  <div style="overflow-x:auto">
-  <table>
-    <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>AM4 账号</th><th>注册时间</th><th>操作</th></tr></thead>
-    <tbody id="ub"></tbody>
-  </table>
-  </div>
+  <div id="ub" class="user-cards"></div>
 </div>
 <script>
 const CSRF = "{{ csrf_token }}";
@@ -66,28 +54,26 @@ function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;'
 function mailCell(e){e=String(e==null?'':e);if(!e)return'—';return'<span class="mail-cell" title="'+esc(e)+'">'+esc(e)+'</span>'}
 function loadUsers(){
   api('/api/admin/users').then(d=>{
-    const tb=document.getElementById('ub');
-    if(!d.ok){ tb.innerHTML='<tr><td colspan="7">加载失败</td></tr>'; return; }
-    tb.innerHTML = d.users.map(u=>{
+    const box=document.getElementById('ub');
+    if(!d.ok){ box.innerHTML='<div style="color:var(--t3)">加载失败</div>'; return; }
+    box.innerHTML = d.users.map(u=>{
       const st=esc(u.status), role=u.is_admin?'管理员':'用户';
-      const ops=[];
+      let ops='';
       if(!u.is_admin){
-        ops.push('<button class="btn-pri" onclick="enter('+u.id+')">进入</button>');
-        if(u.status==='pending') ops.push('<button class="btn-ok" onclick="setStatus('+u.id+',\'active\')">通过</button>');
-        if(u.status!=='disabled') ops.push('<button class="btn-warn" onclick="setStatus('+u.id+',\'disabled\')">停用</button>');
-        if(u.status==='disabled') ops.push('<button class="btn-ok" onclick="setStatus('+u.id+',\'active\')">启用</button>');
-        ops.push('<button class="btn-err" onclick="delUser('+u.id+')">删除</button>');
+        ops+='<button class="btn-pri" onclick="enter('+u.id+')">进入</button>';
+        if(u.status==='pending')ops+='<button class="btn-ok" onclick="setStatus('+u.id+',\'active\')">通过</button>';
+        if(u.status!=='disabled')ops+='<button class="btn-warn" onclick="setStatus('+u.id+',\'disabled\')">停用</button>';
+        if(u.status==='disabled')ops+='<button class="btn-ok" onclick="setStatus('+u.id+',\'active\')">启用</button>';
+        ops+='<button class="btn-err" onclick="delUser('+u.id+')">删除</button>';
       }
-      const opsCell = u.is_admin
-        ? '<td style="color:var(--t3)">—</td>'
-        : '<td><button class="ops-toggle btn-pri" onclick="toggleOps(this)">⚙ 操作</button>'+
-          '<div class="ops">'+ops.join('')+'</div></td>';
-      return '<tr><td>'+u.id+'</td><td>'+esc(u.username)+'</td>'+
-        '<td><span class="badge '+(u.is_admin?'admin':'')+'">'+role+'</span></td>'+
-        '<td><span class="badge '+st+'">'+esc(u.status)+'</span></td>'+
-        '<td>'+mailCell(u.am4_email)+'</td>'+
-        '<td>'+new Date(u.created_at*1000).toLocaleString()+'</td>'+
-        opsCell+'</tr>';
+      return '<div class="user-card">'+
+        '<div class="u-top"><span class="u-name">'+esc(u.username)+'</span>'+
+        '<span class="badge '+(u.is_admin?'admin':'')+'">'+role+'</span>'+
+        '<span class="badge '+st+'">'+esc(u.status)+'</span></div>'+
+        '<div class="u-mail">'+mailCell(u.am4_email)+'</div>'+
+        '<div class="u-time">注册于 '+new Date(u.created_at*1000).toLocaleString()+'</div>'+
+        (u.is_admin?'':'<div class="u-ops">'+ops+'</div>')+
+        '</div>';
     }).join('');
   });
 }
@@ -102,10 +88,6 @@ function delUser(id){
 function enter(id){
   api('/api/admin/impersonate',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({user_id:id})}).then(d=>{ if(d.ok) location.href='/'; else alert(d.msg); });
-}
-function toggleOps(btn){
-  var ops=btn.parentElement.querySelector('.ops');
-  if(ops)ops.classList.toggle('open');
 }
 function logout(){
   api('/api/logout',{method:'POST'}).then(()=>location.href='/login');
