@@ -46,7 +46,7 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 <div class="top">
   <h1>🛠 管理员面板</h1>
   <span class="sp"></span>
-  <button class="btn-ghost" onclick="openPwdModal()">密码</button>
+  <button class="btn-ghost" onclick="openPwdModal()">重置密码</button>
   <button class="btn-ghost" onclick="logout()">退出</button>
 </div>
 <div class="card">
@@ -55,14 +55,10 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 </div>
 <div id="pwdModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:9999;align-items:center;justify-content:center">
   <div style="background:var(--card);border:1px solid var(--brd);border-radius:12px;padding:20px;width:min(92vw,380px)">
-    <h3 style="margin-bottom:12px">🔑 密码管理</h3>
+    <h3 style="margin-bottom:12px">🔑 重置用户密码</h3>
     <label style="display:block;font-size:.85rem;color:var(--t3);margin:8px 0 4px">目标用户</label>
-    <select id="pwdTarget" style="width:100%;padding:8px;border:1px solid var(--brd);border-radius:8px;background:var(--card);color:var(--t)" onchange="toggleOld()"></select>
-    <div id="pwdOldWrap" style="display:none">
-      <label style="display:block;font-size:.85rem;color:var(--t3);margin:8px 0 4px">当前密码（改自己时需要）</label>
-      <input id="pwdOld" type="password" style="width:100%;padding:8px;border:1px solid var(--brd);border-radius:8px;background:var(--card);color:var(--t)">
-    </div>
-    <label style="display:block;font-size:.85rem;color:var(--t3);margin:8px 0 4px">新密码（至少 6 位）</label>
+    <select id="pwdTarget" style="width:100%;padding:8px;border:1px solid var(--brd);border-radius:8px;background:var(--card);color:var(--t)"></select>
+    <label style="display:block;font-size:.85rem;color:var(--t3);margin:8px 0 4px">新密码</label>
     <input id="pwdNew" type="password" style="width:100%;padding:8px;border:1px solid var(--brd);border-radius:8px;background:var(--card);color:var(--t)">
     <div id="pwdMsg" style="font-size:.8rem;color:var(--t3);margin-top:8px"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
@@ -122,45 +118,35 @@ let _pwdUsers=[];
 function openPwdModal(){
   api('/api/admin/users').then(d=>{
     if(!d.ok)return;
-    _pwdUsers=d.users||[];
+    _pwdUsers=(d.users||[]).filter(u=>!u.is_admin);
     const sel=document.getElementById('pwdTarget');
     sel.replaceChildren();
     _pwdUsers.forEach(u=>{
       const o=document.createElement('option');
       o.value=u.id;
-      o.textContent=u.username+(u.is_admin?'（管理员）':'');
+      o.textContent=u.username;
       sel.append(o);
     });
-    const me=_pwdUsers.find(u=>u.is_admin);
-    if(me)sel.value=me.id;
-    document.getElementById('pwdOld').value='';
     document.getElementById('pwdNew').value='';
     document.getElementById('pwdMsg').textContent='';
     document.getElementById('pwdMsg').style.color='var(--t3)';
-    toggleOld();
+    if(!_pwdUsers.length){
+      document.getElementById('pwdMsg').textContent='当前没有可重置密码的普通用户';
+    }
     document.getElementById('pwdModal').style.display='flex';
   }).catch(()=>{});
-}
-function toggleOld(){
-  const sel=document.getElementById('pwdTarget');
-  const target=_pwdUsers.find(u=>String(u.id)===String(sel.value));
-  document.getElementById('pwdOldWrap').style.display=target&&target.is_admin?'block':'none';
 }
 function closePwdModal(){document.getElementById('pwdModal').style.display='none'}
 function submitPwd(){
   const sel=document.getElementById('pwdTarget');
   const target=_pwdUsers.find(u=>String(u.id)===String(sel.value));
   const msg=document.getElementById('pwdMsg');
-  if(!target){msg.textContent='请选择目标用户';return}
+  if(!target){msg.textContent='请选择目标用户';msg.style.color='var(--err)';return}
   const newPwd=document.getElementById('pwdNew').value;
   if(newPwd.length<6){msg.textContent='密码至少 6 个字符';msg.style.color='var(--err)';return}
-  const isSelf=!!target.is_admin;
-  const body=isSelf
-    ? {old_password:document.getElementById('pwdOld').value,new_password:newPwd}
-    : {password:newPwd};
-  const url=isSelf?'/api/admin/password':'/api/admin/users/'+target.id+'/password';
-  const method=isSelf?'PUT':'POST';
-  api(url,{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+  api('/api/admin/users/'+target.id+'/password',
+      {method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({password:newPwd})})
     .then(d=>{
       msg.style.color=d.ok?'var(--ok)':'var(--err)';
       msg.textContent=d.msg||(d.ok?'成功':'失败');

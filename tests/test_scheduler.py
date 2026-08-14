@@ -1121,6 +1121,7 @@ class ServerSchedulingTests(unittest.TestCase):
 
     def test_env_admin_bootstrap_creates_admin_when_missing(self):
         with patch.object(panel_store, "admin_exists", return_value=False), \
+             patch.object(panel_store, "get_user_by_username", return_value=None), \
              patch.object(panel_store, "create_user") as create, \
              patch.dict(os.environ,
                         {"AM4_ADMIN_USERNAME": "root", "AM4_ADMIN_PASSWORD": "root123"},
@@ -1167,31 +1168,45 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertEqual(server._csv_safe_cell("MC-21"), "MC-21")
         self.assertEqual(server._csv_safe_cell(""), "")
 
-    def test_admin_password_change_flow(self):
+    def test_admin_password_synced_from_env(self):
+        # 管理员密码只能通过服务器配置修改：.env 配置的密码会在启动时同步
+        with patch.dict(os.environ,
+                        {"AM4_ADMIN_USERNAME": "testadmin",
+                         "AM4_ADMIN_PASSWORD": "env-pass-1"}, clear=False):
+            server._bootstrap_admin_from_env()
+        try:
+            old_login = server.app.test_client().post(
+                "/api/login", json={"username": "testadmin",
+                                    "password": "test-pass-1"})
+            self.assertEqual(old_login.status_code, 401)
+            new_login = server.app.test_client().post(
+                "/api/login", json={"username": "testadmin",
+                                    "password": "env-pass-1"})
+            self.assertEqual(new_login.status_code, 200)
+        finally:
+            # 恢复原密码，避免影响其他用例
+            panel_store.set_user_password(
+                panel_store.get_user_by_username("testadmin")["id"], "test-pass-1")
+
+    def test_admin_resets_user_password(self):
+        uid = panel_store.create_user(
+            "resetbob", "bob-old-pass",
+            am4_email="resetbob@example.com", am4_password="p")
+        panel_store.set_user_status(uid, "active")
         client = server.app.test_client()
-        login = client.post("/api/login",
-                            json={"username": "testadmin", "password": "test-pass-1"})
-        self.assertEqual(login.status_code, 200)
-        # 原密码错误
-        wrong = client.put("/api/admin/password", json={
-            "old_password": "wrong", "new_password": "newpass1",
-        }, headers={"X-CSRF-Token": server._csrf_token})
-        self.assertEqual(wrong.status_code, 400)
-        # 修改成功
-        ok = client.put("/api/admin/password", json={
-            "old_password": "test-pass-1", "new_password": "newpass1",
-        }, headers={"X-CSRF-Token": server._csrf_token})
-        self.assertEqual(ok.status_code, 200)
-        # 旧密码失效、新密码可登录
-        old_login = server.app.test_client().post(
-            "/api/login", json={"username": "testadmin", "password": "test-pass-1"})
-        self.assertEqual(old_login.status_code, 401)
-        new_login = server.app.test_client().post(
-            "/api/login", json={"username": "testadmin", "password": "newpass1"})
-        self.assertEqual(new_login.status_code, 200)
-        # 恢复原密码，避免影响其他用例
-        panel_store.set_user_password(
-            panel_store.get_user_by_username("testadmin")["id"], "test-pass-1")
+        client.post("/api/login",
+                    json={"username": "testadmin", "password": "test-pass-1"})
+        resp = client.post(
+            "/api/admin/users/%d/password" % uid,
+            json={"password": "bob-new-pass"},
+            headers={"X-CSRF-Token": server._csrf_token})
+        self.assertEqual(resp.status_code, 200)
+        old = server.app.test_client().post(
+            "/api/login", json={"username": "resetbob", "password": "bob-old-pass"})
+        self.assertEqual(old.status_code, 401)
+        new = server.app.test_client().post(
+            "/api/login", json={"username": "resetbob", "password": "bob-new-pass"})
+        self.assertEqual(new.status_code, 200)
 
     def test_unknown_balance_rejects_new_purchase_after_readonly_lookup(self):
         planner = Mock()

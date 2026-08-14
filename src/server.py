@@ -638,25 +638,6 @@ def api_admin_user_password(uid: int):
     return jsonify({"ok": True, "msg": "密码已重置"})
 
 
-@app.route("/api/admin/password", methods=["PUT"])
-def api_admin_change_password():
-    """管理员修改自己的面板密码（需验证原密码）。"""
-    _require_csrf()
-    if not _is_admin_request():
-        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
-    data = request.get_json(silent=True) or {}
-    old_password = str(data.get("old_password", ""))
-    new_password = str(data.get("new_password", ""))
-    user = _real_user()
-    if user is None or not panel_store.verify_password(user, old_password):
-        return jsonify({"ok": False, "msg": "原密码错误"}), 400
-    try:
-        panel_store.set_user_password(user["id"], new_password)
-    except ValueError as exc:
-        return jsonify({"ok": False, "msg": str(exc)}), 400
-    return jsonify({"ok": True, "msg": "密码已修改，下次登录生效"})
-
-
 @app.route("/api/admin/users/<int:uid>", methods=["DELETE"])
 def api_admin_delete_user(uid: int):
     _require_csrf()
@@ -794,21 +775,32 @@ def _current_operation_settings() -> dict:
 
 
 def _bootstrap_admin_from_env() -> None:
-    """启动时若 .env 配置了管理员（AM4_ADMIN_USERNAME/PASSWORD）
-    且账号库中尚无管理员，自动创建，免去访问 /setup。"""
+    """按 .env 管理管理员账户：无管理员时创建；已有同名管理员时同步其密码。
+
+    管理员密码只允许通过服务器配置（AM4_ADMIN_USERNAME/PASSWORD）修改，
+    面板不再提供自改入口，避免会话被劫持后锁死真实管理员。
+    """
     try:
-        if panel_store.admin_exists():
-            return
         username = os.environ.get("AM4_ADMIN_USERNAME", "").strip()
         password = os.environ.get("AM4_ADMIN_PASSWORD", "")
         if not username or not password:
             return
-        try:
-            panel_store.create_user(username, password, is_admin=True, status="active")
-        except ValueError as exc:
-            _append_log(f"⚠ .env 管理员创建失败：{exc}")
+        admin = panel_store.get_user_by_username(username)
+        if admin is None:
+            if panel_store.admin_exists():
+                _append_log(f"⚠ .env 管理员 {username} 与现有管理员不一致，已忽略")
+                return
+            try:
+                panel_store.create_user(username, password, is_admin=True, status="active")
+            except ValueError as exc:
+                _append_log(f"⚠ .env 管理员创建失败：{exc}")
+                return
+            _append_log(f"👑 已从 .env 创建管理员 {username}")
             return
-        _append_log(f"👑 已从 .env 创建管理员 {username}")
+        if admin.get("is_admin") and not panel_store.verify_password(admin, password):
+            # 服务器配置为准：操作者通过 .env 修改管理员密码
+            panel_store.set_user_password(admin["id"], password)
+            _append_log(f"👑 已按 .env 更新管理员 {username} 的密码")
     except Exception:
         pass
 
