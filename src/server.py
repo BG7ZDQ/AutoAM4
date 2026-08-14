@@ -4846,11 +4846,12 @@ def _runner(run: dict) -> None:
                 "account": email,
             })
             run["running"] = False
-            _persist_active_loops()
-            # 营销任务必须归属本账号：在清空线程账号上下文之前补齐
-            _ensure_marketing_tasks()
-            _task_account_ctx.paths = None
-            _task_account_ctx.account = None
+        # 不能在持有 _run_lock 时调用 _persist_active_loops（它内部会再次取锁）
+        _persist_active_loops()
+        # 营销任务必须归属本账号：在清空线程账号上下文之前补齐
+        _ensure_marketing_tasks()
+        _task_account_ctx.paths = None
+        _task_account_ctx.account = None
 
 
 @app.route("/api/stop", methods=["POST"])
@@ -4875,7 +4876,11 @@ def api_stop():
             msg = "⏹ 用户手动停止\n"
             _append_log(msg, paths=run.get("paths"))
             _broadcast_sse({"type": "log", "line": msg, "account": target_email})
-    return jsonify({"ok": True, "msg": "已发送停止信号"})
+        # 立即反映停止状态，避免前端在 _runner 收尾前仍看到“运行中”
+        run["running"] = False
+        run["mode"] = ""
+    _persist_active_loops()
+    return jsonify({"ok": True, "msg": "已停止"})
 
 
 # 所有调度器会调用的辅助函数和路由均已定义后，再恢复任务并启动线程。

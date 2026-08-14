@@ -1263,6 +1263,34 @@ class ServerSchedulingTests(unittest.TestCase):
                 headers={"X-CSRF-Token": server._csrf_token})
         self.assertEqual(resp.status_code, 429)
 
+    def test_manual_stop_marks_run_stopped_immediately(self):
+        key = server.account_key("stop@example.com")
+        proc = Mock()
+        proc.poll.return_value = None
+        server._runs[key] = {
+            "account_email": "stop@example.com", "running": True,
+            "proc": proc, "mode": "loop",
+            "paths": server._paths_for_account("stop@example.com"),
+        }
+        try:
+            with patch.object(server, "_session_account",
+                              return_value={"email": "stop@example.com",
+                                            "password": "p", "settings": {}}), \
+                 patch.object(server, "_append_log"), \
+                 patch.object(server, "_broadcast_sse"), \
+                 patch.object(server, "_persist_active_loops") as persist, \
+                 server.app.test_client() as client:
+                resp = client.post(
+                    "/api/stop",
+                    headers={"X-CSRF-Token": server._csrf_token})
+            self.assertEqual(resp.status_code, 200)
+            self.assertFalse(server._runs[key]["running"])
+            self.assertEqual(server._runs[key]["mode"], "")
+            proc.terminate.assert_called_once()
+            persist.assert_called_once()
+        finally:
+            server._runs.pop(key, None)
+
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
             "othadmin", "other-pass-1", is_admin=True, status="active")
