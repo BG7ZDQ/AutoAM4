@@ -720,7 +720,7 @@ def api_setup():
     provided_token = str(data.get("setup_token") or "")
     if not provided_token or not secrets.compare_digest(provided_token, _SETUP_TOKEN):
         return jsonify({"ok": False, "msg": "初始化令牌无效"}), 403
-    username = str(data.get("username", "")).strip()
+    username = str(data.get("username", ""))
     password = str(data.get("password", ""))
     try:
         # 管理员是纯管理账户：不绑定任何游戏账号
@@ -729,24 +729,7 @@ def api_setup():
         )
     except ValueError as exc:
         return jsonify({"ok": False, "msg": str(exc)}), 400
-    messages = ["管理员创建成功，请登录"]
-    # 可选：把 .env 中的游戏账号接入为普通用户（管理员不持有业务账号）
-    env_email, env_password = _current_env_credentials()
-    bootstrap_user = str(data.get("bootstrap_username", "")).strip()
-    bootstrap_pass = str(data.get("bootstrap_password", ""))
-    if bootstrap_user and bootstrap_pass:
-        if not env_email:
-            messages.append("未检测到 .env 游戏账号，跳过接入")
-        else:
-            try:
-                panel_store.create_user(
-                    bootstrap_user, bootstrap_pass, is_admin=False, status="active",
-                    am4_email=env_email, am4_password=env_password,
-                )
-                messages.append(f"已将 .env 游戏账号接入为普通用户 {bootstrap_user}")
-            except ValueError as exc:
-                messages.append(f"接入失败：{exc}")
-    return jsonify({"ok": True, "msg": "；".join(messages)})
+    return jsonify({"ok": True, "msg": "管理员创建成功，请登录"})
 
 
 @app.route("/api/logout", methods=["POST"])

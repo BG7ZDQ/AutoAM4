@@ -21,24 +21,22 @@ button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;backgr
 button:hover{filter:brightness(1.05)}
 .msg{font-size:.85rem;min-height:1.2em;margin-top:10px}
 .msg.ok{color:#16a34a}.msg.err{color:#dc2626}
+.ferr{display:none;color:#dc2626;font-size:.75rem;margin:4px 2px 0;min-height:1em}
+.ferr.show{display:block}
 </style>
 </head>
 <body>
 <div class="card">
   <h1>创建管理员</h1>
   {% if setup_enabled %}
-  <p class="sub">首次使用：创建管理员账户（纯管理，不绑定游戏账号）。下方可选把现有 .env 中的游戏账号接入为普通用户。</p>
+  <p class="sub">首次使用：创建管理员账户</p>
   <label>初始化令牌（.env 中的 AM4_SETUP_TOKEN）</label>
   <input id="tk" type="password" autocomplete="one-time-code">
-  <label>管理员用户名（2~8 位英文字母或数字，可含空格、_、/）</label>
+  <label>管理员用户名</label>
   <input id="u" autocomplete="username" autofocus>
+  <div class="ferr" id="uerr"></div>
   <label>管理员密码（≥6 字符）</label>
   <input id="p" type="password" autocomplete="new-password">
-  <div style="border-top:1px dashed var(--brd);margin:18px 0 4px"></div>
-  <label>接入 .env 游戏账号？用户名（可选，留空则跳过；规则同上）</label>
-  <input id="bu" autocomplete="off" placeholder="例如：main">
-  <label>该用户的登录密码（可选）</label>
-  <input id="bp" type="password" autocomplete="new-password">
   <div class="msg" id="msg"></div>
   <button onclick="setup()">创建并登录</button>
   {% else %}
@@ -49,25 +47,23 @@ button:hover{filter:brightness(1.05)}
 const CSRF = "{{ csrf_token }}";
 {% if setup_enabled %}
 const USER_RE = /^[A-Za-z0-9 _/]{2,8}$/;
+const USER_HINT = '2~8 位字母/数字，可含空格 _ /，头尾勿空格';
+function showUErr(text){const e=document.getElementById('uerr');e.textContent=text||'';e.classList.add('show');}
+function hideUErr(){const e=document.getElementById('uerr');e.textContent='';e.classList.remove('show');}
+const uEl=document.getElementById('u');
+uEl.addEventListener('input',()=>{
+  const raw=uEl.value, v=raw.trim();
+  if(raw&&(raw!==v||!USER_RE.test(v))){showUErr(USER_HINT);}else{hideUErr();}
+});
 function setup(){
   const tk=document.getElementById('tk').value.trim();
   const uRaw=document.getElementById('u').value, u=uRaw.trim(),
         p=document.getElementById('p').value;
-  const buRaw=document.getElementById('bu').value, bu=buRaw.trim(),
-        bp=document.getElementById('bp').value;
   const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
-  if(!u||uRaw!==u||!USER_RE.test(u)){
-    msg.className='msg err';
-    msg.textContent='用户名需为 2~8 位字母/数字，可含空格 _ /，头尾勿空格';
-    return;
-  }
-  if(buRaw&&(buRaw!==bu||!USER_RE.test(bu))){
-    msg.className='msg err';
-    msg.textContent='接入用户名规则同上';
-    return;
-  }
+  hideUErr();
+  if(!u||uRaw!==u||!USER_RE.test(u)){ showUErr(USER_HINT); return; }
   fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
-    body:JSON.stringify({setup_token:tk,username:u,password:p,bootstrap_username:bu,bootstrap_password:bp})})
+    body:JSON.stringify({setup_token:tk,username:u,password:p})})
     .then(r=>r.json().then(d=>({ok:r.ok,d})))
     .then(({ok,d})=>{
       if(ok){ msg.className='msg ok'; msg.textContent='创建成功，正在登录…';

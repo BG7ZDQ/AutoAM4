@@ -1210,6 +1210,27 @@ class ServerSchedulingTests(unittest.TestCase):
             self.assertFalse(resp.get_json()["ok"])
             self.assertIn("不正确", resp.get_json()["msg"])
 
+    def test_setup_creates_pure_admin_without_game_account(self):
+        with patch.object(server, "_SETUP_TOKEN", "tok-123"), \
+             patch.object(server.panel_store, "admin_exists",
+                          return_value=False), \
+             server.app.test_client() as client:
+            resp = client.post(
+                "/api/setup",
+                json={"setup_token": "tok-123",
+                      "username": "newadmin", "password": "new-pass-1"},
+                headers={"X-CSRF-Token": server._csrf_token})
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()["ok"])
+        user = server.panel_store.get_user_by_username("newadmin")
+        self.assertIsNotNone(user)
+        self.assertEqual(user["is_admin"], 1)
+        # 管理员是纯管理身份：不绑定任何游戏账号
+        account = server.panel_store.get_account(user["id"])
+        self.assertEqual(account.get("am4_email"), "")
+        self.assertEqual(account.get("am4_password"), "")
+        server.panel_store.delete_user(user["id"])
+
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
             "othadmin", "other-pass-1", is_admin=True, status="active")
