@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>注册 - AM4 机队中心</title>
+<style>
+:root{--bg:#f3f5f9;--card:#fff;--t:#1c2430;--t3:#8a93a3;--pri:#2563eb;--brd:#e2e6ef}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--t);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+.card{background:var(--card);border:1px solid var(--brd);border-radius:14px;box-shadow:0 8px 28px rgba(20,30,60,.08);
+  padding:28px;width:100%;max-width:400px}
+h1{font-size:1.25rem;margin-bottom:4px}
+p.sub{color:var(--t3);font-size:.85rem;margin-bottom:8px}
+label{display:block;font-size:.85rem;color:var(--t3);margin:10px 0 4px}
+input{width:100%;padding:10px 12px;border:1px solid var(--brd);border-radius:8px;font-size:1rem;outline:none}
+input:focus{border-color:var(--pri)}
+button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;background:var(--pri);color:#fff;
+  font-size:1rem;cursor:pointer}
+button:hover{filter:brightness(1.05)}
+.msg{font-size:.85rem;min-height:1.2em;margin-top:10px}
+.msg.ok{color:#16a34a}.msg.err{color:#dc2626}
+.link{margin-top:14px;text-align:center;font-size:.85rem;color:var(--t3)}
+.link a{color:var(--pri);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>注册账户</h1>
+  <p class="sub">一个网站账户对应一个游戏账号，注册后需管理员审核。</p>
+  <label>用户名（登录用，≥2 字符）</label>
+  <input id="u" autocomplete="username" autofocus>
+  <label>密码（≥6 字符）</label>
+  <input id="p" type="password" autocomplete="new-password">
+  <label>AM4 游戏账号（邮箱）</label>
+  <input id="e" autocomplete="off" placeholder="your@example.com">
+  <label>AM4 游戏密码</label>
+  <input id="pw" type="password" autocomplete="new-password">
+  <div class="msg" id="msg"></div>
+  <button onclick="reg()">提交注册</button>
+  <div class="link">已有账号？<a href="/login">登录</a></div>
+</div>
+<script>
+const CSRF = "{{ csrf_token }}";
+function reg(){
+  const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value,
+        e=document.getElementById('e').value.trim(), pw=document.getElementById('pw').value;
+  const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
+  fetch('/api/register',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
+    body:JSON.stringify({username:u,password:p,am4_email:e,am4_password:pw})})
+    .then(r=>r.json().then(d=>({ok:r.ok,d})))
+    .then(({ok,d})=>{
+      msg.className='msg '+(ok?'ok':'err'); msg.textContent=d.msg||(ok?'已提交':'注册失败');
+      if(ok){ setTimeout(()=>location.href='/login',1500); }
+    })
+    .catch(()=>{ msg.className='msg err'; msg.textContent='网络错误，请重试'; });
+}
+</script>
+</body>
+</html>

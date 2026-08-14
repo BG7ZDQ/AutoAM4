@@ -16,7 +16,8 @@ import time
 from functools import wraps
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from flask import Flask, abort, jsonify, request, render_template, Response
+from flask import (Flask, abort, g, jsonify, redirect, render_template, request,
+                   Response, session, url_for)
 
 from account_storage import account_key, account_output_dir, normalize_account
 from storage_utils import atomic_write_json, exclusive_file_lock
@@ -109,7 +110,16 @@ def _active_credentials() -> tuple[str, str]:
 
 
 def _paths() -> dict:
-    """已激活账号的数据路径；运行中修改 .env 不会令一次操作跨账号。"""
+    """当前作用域的数据路径。
+
+    登录请求内优先返回登录用户（或被模拟用户）账号的路径；
+    后台线程/服务令牌调用没有请求上下文，回退到循环账号路径。
+    """
+    try:
+        if g.session_paths is not None:
+            return g.session_paths
+    except Exception:
+        pass
     with _account_lock:
         email = _active_account_email
     return _paths_for_account(email)
@@ -122,7 +132,12 @@ def _migrate_legacy_outputs() -> None:
         d = account_output_dir(OUTPUTS_ROOT, _current_env_credentials()[0])
         if legacy != d and legacy.exists() and not any(d.iterdir()):
             for f in legacy.iterdir():
-                if f.is_file():
+                # 只迁移已知的旧版数据文件，避免误搬 panel.db/日志等无关文件
+                if f.is_file() and f.name in {
+                    "fleet_complete.csv", "fleet.csv", "maintenance_checks.csv",
+                    "market_data.json", "hub_list.json", "run_log.txt",
+                    "builds.csv", "pending_tasks.json", "schedule_state.json",
+                }:
                     f.replace(d / f.name)
     except Exception:
         pass
@@ -155,13 +170,42 @@ def _load_csrf_token() -> str:
 _csrf_token = _load_csrf_token()
 
 
+def _load_or_create_secret(path: Path, bits: int = 32) -> str:
+    """读取或生成持久化密钥/令牌（会话签名、服务调用）。"""
+    try:
+        tok = path.read_text(encoding="utf-8").strip()
+        if tok:
+            return tok
+    except Exception:
+        pass
+    tok = secrets.token_urlsafe(bits)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(tok, encoding="utf-8")
+    except Exception:
+        pass
+    return tok
+
+
+_SESSION_SECRET_FILE = ROOT / "src" / ".session_secret"
+_session_secret = _load_or_create_secret(_SESSION_SECRET_FILE)
+
+# 服务令牌：供 systemd ExecStartPost（start_loop.py）等本机进程调用写接口，
+# 不依赖浏览器登录态。
+_SERVICE_TOKEN_FILE = ROOT / "src" / ".service_token"
+_service_token = _load_or_create_secret(_SERVICE_TOKEN_FILE)
+
+
 def _require_csrf():
     """POST 写操作保护：要求携带与页面令牌匹配的 X-CSRF-Token 头。
 
     浏览器同源策略使跨源页面无法读取本站 HTML（拿不到令牌），
     而跨源 fetch 携带自定义头会触发 CORS 预检并被拒 —— 双保险。
     """
-    if request.headers.get("X-CSRF-Token", "") != _csrf_token:
+    token = request.headers.get("X-CSRF-Token", "")
+    valid = token == _csrf_token or token == _session_csrf() or \
+        token == _service_token
+    if not valid:
         # 抛出携带 JSON 响应体的 403，避免返回 HTML 错误页（前端解析失败），
         # 同时确保调用方不 return 也会生效
         abort(Response(
@@ -170,6 +214,297 @@ def _require_csrf():
         ))
 
 app = Flask(__name__)
+app.config.update(
+    SECRET_KEY=_session_secret,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    # 部署在 HTTPS 后置 AM4_COOKIE_SECURE=1；本地 http 调试保持 0
+    SESSION_COOKIE_SECURE=os.environ.get("AM4_COOKIE_SECURE", "0") == "1",
+)
+
+import panel_store
+
+
+# ===== 面板登录 / 多账号 / 管理员 =====
+
+def _session_csrf() -> str:
+    """每个浏览器会话独立的 CSRF 令牌（惰性生成）。"""
+    if "csrf" not in session:
+        session["csrf"] = secrets.token_urlsafe(24)
+    return session["csrf"]
+
+
+_login_attempts: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCK_SECONDS = 15 * 60
+
+
+def _login_blocked(username: str) -> bool:
+    with _login_lock:
+        attempts = _login_attempts.get(username, [])
+        now = time.time()
+        attempts = [t for t in attempts if now - t < _LOGIN_LOCK_SECONDS]
+        _login_attempts[username] = attempts
+        return len(attempts) >= _LOGIN_MAX_ATTEMPTS
+
+
+def _record_login_failure(username: str) -> None:
+    with _login_lock:
+        _login_attempts.setdefault(username, []).append(time.time())
+
+
+def _clear_login_failures(username: str) -> None:
+    with _login_lock:
+        _login_attempts.pop(username, None)
+
+
+def _real_user() -> dict | None:
+    """会话真实登录用户（管理员模拟身份时仍返回管理员本人）。"""
+    uid = session.get("uid")
+    if not uid:
+        return None
+    user = panel_store.get_user_by_id(uid)
+    if user is None or user.get("status") != "active":
+        return None
+    return user
+
+
+def _effective_user() -> dict | None:
+    """当前生效用户：管理员模拟身份时返回被模拟账号的主人，否则返回登录用户。"""
+    real = _real_user()
+    if real is None:
+        return None
+    target_id = session.get("impersonate_uid")
+    if real.get("is_admin") and target_id:
+        target = panel_store.get_user_by_id(target_id)
+        if target is not None and target.get("status") == "active":
+            return target
+    return real
+
+
+def _session_account() -> dict:
+    """当前生效用户绑定的 AM4 账号（email/password/settings）。"""
+    user = _effective_user()
+    if user is None:
+        return {"email": "", "password": "", "settings": dict(panel_store.DEFAULT_SETTINGS)}
+    acct = panel_store.get_account(user["id"])
+    if acct is None:
+        # 未绑游戏账号（如管理员）回退到当前循环账号，便于直接查看运行数据
+        email, password = _active_credentials()
+        return {"email": email, "password": password, "settings": {}}
+    return {
+        "email": acct.get("am4_email", ""),
+        "password": acct.get("am4_password", ""),
+        "settings": acct.get("settings") or {},
+    }
+
+
+def _session_paths() -> dict:
+    """当前生效账号的数据路径；未绑号时回退到循环账号。"""
+    email = _session_account()["email"]
+    if not email:
+        return _paths()
+    return _paths_for_account(email)
+
+
+def _is_admin_request() -> bool:
+    user = _real_user()
+    return bool(user and user.get("is_admin"))
+
+
+_PUBLIC_PAGES = {"/login", "/register", "/setup"}
+_PUBLIC_API = {"/api/login", "/api/register", "/api/setup", "/api/session", "/healthz"}
+
+
+@app.before_request
+def _auth_gate():
+    """统一鉴权门：静态资源/公开页/公开 API 放行；其余必须登录（或带服务令牌）。"""
+    if request.method == "OPTIONS":
+        return None
+    path = request.path
+    if path.startswith("/static/") or path in _PUBLIC_PAGES or path in _PUBLIC_API:
+        return None
+    if request.headers.get("X-Service-Token", "") == _service_token:
+        return None
+    user = _effective_user()
+    if user is not None:
+        # 请求作用域数据路径 = 当前生效账号；后台线程没有 g，不受影响
+        g.session_paths = _session_paths()
+        if path == "/admin" and not user.get("is_admin"):
+            return redirect(url_for("index_page"))
+        return None
+    if path.startswith("/api/"):
+        return jsonify({"ok": False, "msg": "未登录或登录已过期"}), 401
+    return redirect(url_for("login_page"))
+
+
+@app.route("/login")
+def login_page():
+    if _effective_user() is not None:
+        return redirect(url_for("index_page"))
+    return render_template("login.html", csrf_token=_session_csrf())
+
+
+@app.route("/register")
+def register_page():
+    if _effective_user() is not None:
+        return redirect(url_for("index_page"))
+    return render_template("register.html", csrf_token=_session_csrf())
+
+
+@app.route("/setup")
+def setup_page():
+    if panel_store.admin_exists():
+        return redirect(url_for("login_page"))
+    return render_template("setup.html", csrf_token=_session_csrf())
+
+
+@app.route("/healthz")
+def healthz():
+    return jsonify({"ok": True})
+
+
+@app.route("/api/session")
+def api_session():
+    user = _effective_user()
+    real = _real_user()
+    if user is None:
+        return jsonify({"logged_in": False})
+    account = panel_store.get_account(user["id"]) or {}
+    return jsonify({
+        "logged_in": True,
+        "username": user.get("username"),
+        "is_admin": bool(real and real.get("is_admin")),
+        "status": user.get("status"),
+        "impersonating": bool(session.get("impersonate_uid")),
+        "impersonate_username": user.get("username") if session.get("impersonate_uid") else None,
+        "am4_email": account.get("am4_email", ""),
+        "settings": (account.get("settings") or {}) if account else {},
+    })
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    data = request.get_json(silent=True) or {}
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    if not username or not password:
+        return jsonify({"ok": False, "msg": "请输入用户名和密码"}), 400
+    if _login_blocked(username):
+        return jsonify({"ok": False, "msg": "尝试次数过多，请 15 分钟后再试"}), 429
+    user = panel_store.get_user_by_username(username)
+    if user is None or not panel_store.verify_password(user, password):
+        _record_login_failure(username)
+        return jsonify({"ok": False, "msg": "用户名或密码错误"}), 401
+    _clear_login_failures(username)
+    status = user.get("status")
+    if status == "pending":
+        return jsonify({"ok": False, "msg": "账号待管理员审核，请稍后再试"}), 403
+    if status != "active":
+        return jsonify({"ok": False, "msg": "账号已被停用"}), 403
+    session.clear()
+    session["uid"] = user["id"]
+    session["csrf"] = secrets.token_urlsafe(24)
+    return jsonify({
+        "ok": True,
+        "username": user.get("username"),
+        "is_admin": bool(user.get("is_admin")),
+    })
+
+
+@app.route("/api/register", methods=["POST"])
+def api_register():
+    data = request.get_json(silent=True) or {}
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    am4_email = str(data.get("am4_email", "")).strip()
+    am4_password = str(data.get("am4_password", ""))
+    settings = data.get("settings") or {}
+    try:
+        panel_store.create_user(
+            username, password, is_admin=False, status="pending",
+            am4_email=am4_email, am4_password=am4_password, settings=settings,
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "msg": str(exc)}), 400
+    return jsonify({"ok": True, "msg": "注册成功，等待管理员审核后即可登录"})
+
+
+@app.route("/api/setup", methods=["POST"])
+def api_setup():
+    if panel_store.admin_exists():
+        return jsonify({"ok": False, "msg": "管理员已存在"}), 403
+    data = request.get_json(silent=True) or {}
+    username = str(data.get("username", "")).strip()
+    password = str(data.get("password", ""))
+    try:
+        email, pwd = _current_env_credentials()
+        panel_store.create_user(
+            username, password, is_admin=True, status="active",
+            am4_email=email, am4_password=pwd,
+            settings=data.get("settings") or {},
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "msg": str(exc)}), 400
+    return jsonify({"ok": True, "msg": "管理员创建成功，请登录"})
+
+
+@app.route("/api/logout", methods=["POST"])
+def api_logout():
+    _require_csrf()
+    session.clear()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/users")
+def api_admin_users():
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    return jsonify({"ok": True, "users": panel_store.list_users()})
+
+
+@app.route("/api/admin/users/<int:uid>/status", methods=["POST"])
+def api_admin_user_status(uid: int):
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    data = request.get_json(silent=True) or {}
+    status = str(data.get("status", ""))
+    try:
+        panel_store.set_user_status(uid, status)
+    except ValueError as exc:
+        return jsonify({"ok": False, "msg": str(exc)}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/users/<int:uid>", methods=["DELETE"])
+def api_admin_delete_user(uid: int):
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    if uid == _real_user()["id"]:
+        return jsonify({"ok": False, "msg": "不能删除自己"}), 400
+    panel_store.delete_user(uid)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/impersonate", methods=["POST"])
+def api_admin_impersonate():
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    data = request.get_json(silent=True) or {}
+    target_id = int(data.get("user_id") or 0)
+    target = panel_store.get_user_by_id(target_id)
+    if target is None or target.get("status") != "active":
+        return jsonify({"ok": False, "msg": "目标账号不存在或未激活"}), 400
+    session["impersonate_uid"] = target_id
+    return jsonify({"ok": True, "username": target.get("username")})
+
+
+@app.route("/api/admin/unimpersonate", methods=["POST"])
+def api_admin_unimpersonate():
+    _require_csrf()
+    session.pop("impersonate_uid", None)
+    return jsonify({"ok": True})
 
 
 @app.before_request
@@ -198,11 +533,15 @@ def _get_route_planner(require_login: bool = False):
         _route_planner = rp
     if require_login:
         tmp_dir = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp")))
-        email, password = _active_credentials()
+        # 在线操作使用当前登录（或被模拟）账号的凭据
+        acct = _session_account()
+        email, password = acct.get("email", ""), acct.get("password", "")
         # _do_curl 读取的是 extract 模块的全局 Cookie，必须与 market worker 同一套会话
         import collector as ext
-        ext.COOKIE_JAR = tmp_dir / "am4_cookiejar_worker.txt"
-        ext.ACCOUNT_MARKER = ext.COOKIE_JAR.with_name("am4_cookiejar_worker_account.txt")
+        # 并发多账号：Cookie 按账号隔离
+        key = account_key(email) if email else "worker"
+        ext.COOKIE_JAR = tmp_dir / f"am4_cookiejar_{key}.txt"
+        ext.ACCOUNT_MARKER = ext.COOKIE_JAR.with_name(f"am4_cookiejar_{key}_account.txt")
         ext.EMAIL, ext.PASSWORD = email, password
         ext._ensure_login()
     return _route_planner
@@ -2263,6 +2602,9 @@ def _dashboard_fleet_snapshot(rows: list[dict]) -> list[dict]:
 
 @app.route("/")
 def index():
+    # 管理员（未模拟他人时）直接进管理员面板
+    if _is_admin_request() and not session.get("impersonate_uid"):
+        return redirect(url_for("admin_page"))
     fleet = _fleet_rows()
     p = _paths()
     hubs = []
@@ -2285,8 +2627,8 @@ def index():
         initial_running = bool(_run_status.get("running"))
         initial_mode = str(_run_status.get("mode", ""))
     return render_template(
-        "index.html", csrf_token=_csrf_token,
-        account=_active_credentials()[0],
+        "index.html", csrf_token=_session_csrf(),
+        account=_session_account()["email"] or _active_credentials()[0],
         initial_running=initial_running, initial_mode=initial_mode,
         dashboard_bootstrap={
             "fleet": _dashboard_fleet_snapshot(fleet), "hubs": hubs,
@@ -2295,11 +2637,19 @@ def index():
     )
 
 
+@app.route("/admin")
+def admin_page():
+    return render_template("admin.html", csrf_token=_session_csrf())
+
+
 @app.route("/api/status")
 def api_status():
     p = _paths()
     fleet = _read_csv(p["fleet"])
     maint = _read_csv(p["maint"])
+    loop_email = _active_credentials()[0]
+    acct = _session_account()
+    effective = _effective_user()
     with _run_lock:
         status = {
             "running": _run_status["running"],
@@ -2308,7 +2658,10 @@ def api_status():
             "error": _run_status["error"],
             "fleet_count": len(fleet),
             "maint_count": len(maint),
-            "account": _active_credentials()[0],
+            "account": acct["email"] or loop_email,
+            "loop_account": loop_email,
+            "username": (effective or {}).get("username"),
+            "impersonating": bool(session.get("impersonate_uid")),
             "progress_total": _run_status["progress_total"],
             "progress_current": _run_status["progress_current"],
         }
@@ -2906,24 +3259,38 @@ def api_route_build():
 def api_pending():
     """待定任务清单（交付等待等）：按触发时间排序，含剩余秒数。"""
     now = time.time()
-    with _pending_lock:
-        tasks = sorted(
-            (t for t in _pending_tasks if t.get("status") in ("pending", "running", "failed")),
-            key=lambda t: t.get("trigger_at", 0),
-        )
-        out = [{
-            "id": t["id"],
-            "kind": t.get("kind"),
-            "title": _pending_display_title(t),
-            "status": t.get("status"),
-            "error": t.get("error"),
-            "route_id": str((t.get("params") or {}).get("route_id", "")),
-            "route_required": t.get("kind") in _AIRCRAFT_OWNED_TASK_KINDS,
-            "route_ready": bool(t.get("params", {}).get("route_id")),
-            "trigger_at": t.get("trigger_at"),
-            "remaining": max(0, int(t.get("trigger_at", now) - now)),
-            "created_at": t.get("created_at"),
-        } for t in tasks]
+    acct = _session_account()
+    loop_email = _active_credentials()[0]
+    if not acct["email"] or normalize_account(acct["email"]) == normalize_account(loop_email):
+        # 当前循环账号：使用内存待办（调度器正在维护）
+        with _pending_lock:
+            tasks = sorted(
+                (t for t in _pending_tasks if t.get("status") in ("pending", "running", "failed")),
+                key=lambda t: t.get("trigger_at", 0),
+            )
+    else:
+        # 其他账号：直接读该账号的待办文件（其循环未在本地调度器中运行）
+        try:
+            tasks = json.loads(_session_paths()["pending"].read_text(encoding="utf-8"))
+            tasks = sorted(
+                (t for t in tasks if t.get("status") in ("pending", "running", "failed")),
+                key=lambda t: t.get("trigger_at", 0),
+            )
+        except Exception:
+            tasks = []
+    out = [{
+        "id": t["id"],
+        "kind": t.get("kind"),
+        "title": _pending_display_title(t),
+        "status": t.get("status"),
+        "error": t.get("error"),
+        "route_id": str((t.get("params") or {}).get("route_id", "")),
+        "route_required": t.get("kind") in _AIRCRAFT_OWNED_TASK_KINDS,
+        "route_ready": bool(t.get("params", {}).get("route_id")),
+        "trigger_at": t.get("trigger_at"),
+        "remaining": max(0, int(t.get("trigger_at", now) - now)),
+        "created_at": t.get("created_at"),
+    } for t in tasks]
     return jsonify(out)
 
 
@@ -3027,6 +3394,11 @@ def api_market():
     # 始终以磁盘采集快照（含燃油价/CO2价/配额）为基底
     data = {"balance": "", "fuel_qty": "", "fuel_price": "", "co2_price": "", "co2_qty": "", "updated_at": ""}
     _mkt = _paths()["market"]
+    acct = _session_account()
+    loop_email = _active_credentials()[0]
+    is_loop_account = bool(
+        not acct["email"] or normalize_account(acct["email"]) == normalize_account(loop_email)
+    )
     if _mkt.exists():
         try:
             data.update(json.loads(_mkt.read_text(encoding="utf-8")))
@@ -3034,7 +3406,7 @@ def api_market():
             pass
     now = time.time()
     with _market_rt_lock:
-        if _market_rt_cache is not None:
+        if is_loop_account and _market_rt_cache is not None:
             # 实时缓存覆盖余额/燃油库存（抓取会更新）
             data["balance"] = _market_rt_cache.get("balance", data.get("balance", ""))
             data["fuel_qty"] = _market_rt_cache.get("fuel_qty", data.get("fuel_qty", ""))
@@ -3043,8 +3415,11 @@ def api_market():
             data["fuel_price"] = _market_rt_cache.get("fuel_price", data.get("fuel_price", ""))
             data["updated_at"] = _market_rt_cache.get("updated_at", data.get("updated_at", ""))
             need_fetch = (now - _market_rt_ts) > _market_rt_min_interval
-        else:
+        elif is_loop_account:
             need_fetch = True
+        else:
+            # 非循环账号不触发全局 market worker，只展示该账号磁盘快照
+            need_fetch = False
         retry_in = max(0, int(_market_rt_retry_after - now))
         retry_error = _market_rt_last_error
 
@@ -3061,7 +3436,8 @@ def api_market():
     data["refresh_retry_in"] = retry_in
     data["refresh_error"] = retry_error if retry_in > 0 else ""
 
-    reserve = max(0.0, float(os.environ.get("AM4_CASH_RESERVE", "5000000")))
+    settings = acct.get("settings") or {}
+    reserve = max(0.0, float(settings.get("cash_reserve", 5000000)))
     try:
         balance_num = float(re.sub(r"[^0-9.-]", "", str(data.get("balance", ""))) or 0)
     except (TypeError, ValueError):
@@ -3112,7 +3488,14 @@ def api_run():
         "mode": _run_status["mode"],
     })
 
-    run_email, run_password = _active_credentials()
+    # 服务令牌（systemd 续接）继续跑当前循环账号；用户启动则绑定其账号与设置
+    if request.headers.get("X-Service-Token", "") == _service_token:
+        run_email, run_password = _active_credentials()
+        run_settings: dict = {}
+    else:
+        run_acct = _session_account()
+        run_email, run_password = run_acct.get("email", ""), run_acct.get("password", "")
+        run_settings = run_acct.get("settings") or {}
     run_paths = _paths_for_account(run_email)
 
     def _runner():
@@ -3128,9 +3511,10 @@ def api_run():
                 args.append("--light")
 
             env = os.environ.copy()
-            # 一次 runner 固定使用启动时账号；运行中修改 .env 只会在本轮结束后切换。
+            # 一次 runner 固定使用启动时账号；账号设置注入为环境变量。
             env["AM4_EMAIL"] = run_email
             env["AM4_PASSWORD"] = run_password
+            env.update(panel_store.settings_to_env(run_settings))
             env["PYTHONIOENCODING"] = "utf-8"
             proc = subprocess.Popen(
                 args,

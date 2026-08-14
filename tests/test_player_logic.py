@@ -22,14 +22,25 @@ os.environ["AM4_OUTPUTS_DIR"] = _TEST_OUTPUTS.name
 os.environ["AM4_DISABLE_SCHEDULER"] = "1"
 os.environ["AM4_EMAIL"] = "tests@example.invalid"
 os.environ["AM4_PASSWORD"] = "test-password"
+# 面板数据库放在独立临时目录，避免被 _migrate_legacy_outputs 移走
+_TEST_DB_DIR = tempfile.mkdtemp()
+os.environ["AM4_PANEL_DB"] = os.path.join(_TEST_DB_DIR, "panel.db")
 
 import auto_buy
 import account_storage
 import collector
 import fresh_demand
+import panel_store
 import route_planner
 import server
 import storage_utils
+
+# 面板已启用登录鉴权：测试统一以管理员身份登录，并绑定测试账号数据。
+_TEST_ADMIN_ID = panel_store.create_user(
+    "testadmin", "test-pass-1", is_admin=True, status="active",
+    am4_email="tests@example.invalid", am4_password="test-password",
+)
+server._effective_user = lambda: panel_store.get_user_by_id(_TEST_ADMIN_ID)
 
 
 class DailyScheduleTests(unittest.TestCase):

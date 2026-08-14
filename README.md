@@ -90,6 +90,16 @@ python src/server.py
 
 可用 `AM4_PORT` 修改本地端口。开发或只读检查时可设置 `AM4_DISABLE_SCHEDULER=1`，阻止后台待办执行。
 
+## 面板账号与登录
+
+面板已内置登录体系（替代 nginx Basic Auth）：
+
+- **首次启动**：访问 `/setup` 创建管理员账户，现有 `.env` 中的游戏账号会自动绑定到管理员名下。
+- **注册**：`/register` 注册后状态为 `pending`，需管理员在管理面板审核通过才能登录。
+- **账号设置**：登录后主页「设置」可修改 AM4 凭据与自动化参数（成本指数、采购阈值、现金垫、A-Check/磨损保护），并独立开关自动营销、自动买油、自动买 CO₂、自动起飞。
+- **多账号**：每个网站账户绑定唯一的游戏账号，运行数据按账号哈希目录隔离；管理员可审核用户、停用/删除账号，并可「以该账号身份」进入与账号主人一致的主面板。
+- **并发循环**：每个账号可各自启动循环（采集子进程按账号隔离 Cookie 与会话），系统全局限制并发循环数量（`AM4_MAX_CONCURRENT_LOOPS`，默认 3）。
+
 ## 命令行调试
 
 ```bash
@@ -120,10 +130,12 @@ python src/collector.py --loop --interval 1800
 仓库提供了参考配置：
 
 - [deploy/am4.service](deploy/am4.service)：单进程 Gunicorn + 自动启动循环
-- [deploy/nginx-am4.conf](deploy/nginx-am4.conf)：Nginx 反向代理与 Basic Auth
+- [deploy/nginx-am4.conf](deploy/nginx-am4.conf)：Nginx 反向代理与 HTTPS
 - [deploy/start_loop.py](deploy/start_loop.py)：systemd 启动后的循环接续助手
 
-参考配置假定项目位于 `/opt/am4/app`、虚拟环境位于 `/opt/am4/app/.venv`。部署时应修改域名、创建 `.env`、配置 HTTPS，并为控制面板设置独立认证。
+参考配置假定项目位于 `/opt/am4/app`、虚拟环境位于 `/opt/am4/app/.venv`。部署时应修改域名、创建 `.env`、配置 HTTPS（certbot），并设置 `AM4_COOKIE_SECURE=1`。登录认证由应用自身提供（`/setup` 创建管理员），无需再配置 nginx Basic Auth；`start_loop.py` 通过 `src/.service_token` 中的服务令牌恢复循环，不依赖浏览器会话。
+
+面板用户、绑定账号与设置保存在 `data/panel.db`（SQLite，已在 .gitignore 中）。请确保该目录仅服务用户可读写（如 `chmod 700 data`）。
 
 ## 测试
 

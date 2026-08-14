@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>登录 - AM4 机队中心</title>
+<style>
+:root{--bg:#f3f5f9;--card:#fff;--t:#1c2430;--t3:#8a93a3;--pri:#2563eb;--brd:#e2e6ef}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--t);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+.card{background:var(--card);border:1px solid var(--brd);border-radius:14px;box-shadow:0 8px 28px rgba(20,30,60,.08);
+  padding:28px;width:100%;max-width:360px}
+h1{font-size:1.25rem;margin-bottom:4px}
+p.sub{color:var(--t3);font-size:.85rem;margin-bottom:20px}
+label{display:block;font-size:.85rem;color:var(--t3);margin:12px 0 4px}
+input{width:100%;padding:10px 12px;border:1px solid var(--brd);border-radius:8px;font-size:1rem;outline:none}
+input:focus{border-color:var(--pri)}
+button{width:100%;margin-top:20px;padding:11px;border:0;border-radius:8px;background:var(--pri);color:#fff;
+  font-size:1rem;cursor:pointer}
+button:hover{filter:brightness(1.05)}
+.err{color:#dc2626;font-size:.85rem;min-height:1.2em;margin-top:10px}
+.link{margin-top:14px;text-align:center;font-size:.85rem;color:var(--t3)}
+.link a{color:var(--pri);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>✈ AM4 机队中心</h1>
+  <p class="sub">登录你的账户</p>
+  <label>用户名</label>
+  <input id="u" autocomplete="username" autofocus>
+  <label>密码</label>
+  <input id="p" type="password" autocomplete="current-password">
+  <div class="err" id="err"></div>
+  <button onclick="login()">登 录</button>
+  <div class="link">还没有账号？<a href="/register">注册</a></div>
+</div>
+<script>
+const CSRF = "{{ csrf_token }}";
+function login(){
+  const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
+  const err=document.getElementById('err'); err.textContent='';
+  fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
+    body:JSON.stringify({username:u,password:p})})
+    .then(r=>r.json().then(d=>({ok:r.ok,d})))
+    .then(({ok,d})=>{
+      if(ok){ location.href = d.is_admin ? '/admin' : '/'; }
+      else{ err.textContent = d.msg || '登录失败'; }
+    })
+    .catch(()=>{ err.textContent='网络错误，请重试'; });
+}
+document.addEventListener('keydown',e=>{ if(e.key==='Enter') login(); });
+</script>
+</body>
+</html>

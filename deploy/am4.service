@@ -11,6 +11,7 @@ WorkingDirectory=/opt/am4/app
 Environment=AM4_PORT=5000
 Environment=TEMP=/opt/am4/tmp
 Environment=PYTHONUNBUFFERED=1
+Environment=AM4_COOKIE_SECURE=1
 ExecStart=/opt/am4/app/.venv/bin/gunicorn --chdir /opt/am4/app/src --bind 127.0.0.1:5000 --workers 1 --threads 8 --timeout 900 --access-logfile - --error-logfile - server:app
 ExecStartPost=/opt/am4/app/.venv/bin/python /opt/am4/app/deploy/start_loop.py
 Restart=on-failure

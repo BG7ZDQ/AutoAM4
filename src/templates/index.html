@@ -124,10 +124,15 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <div class="header"><div class="header-main"><h1><span class="icon">✈</span> AM4 机队中心 <span class="sse-dot off" id="sseDot"></span></h1><div class="header-meta"><span class="status-chip{{ ' running' if initial_running else '' }}" id="runChip"><span class="dot"></span><span id="runChipTxt">{{ '运行中' if initial_running else '空闲' }}</span></span></div></div>
 <div class="header-actions">
 <button class="btn btn-outline btn-sm btn-icon" id="btnTheme" onclick="toggleTheme()">🌙</button>
+<button class="btn btn-outline btn-sm" id="btnAdmin" style="display:none" onclick="location.href='/admin'">🛠 管理</button>
 <button class="btn btn-outline btn-sm" onclick="refreshAll()">🔄 刷新</button>
 <button class="btn btn-success" id="btnRunLoop" onclick="run('loop')"{% if initial_running %} style="display:none"{% endif %}><span class="b-full">🔁 循环运行</span><span class="b-short">🔁 循环</span></button>
 <button class="btn btn-danger" id="btnStop" onclick="stop()" style="display:{{ 'inline-flex' if initial_running else 'none' }}">⏹ 停止</button>
 </div></div>
+<div class="imp-banner" id="impBanner" style="display:none;align-items:center;gap:10px;background:var(--card);border:1px solid var(--wr);border-radius:var(--r);padding:8px 14px;margin-bottom:16px;font-size:.85rem">
+  <span>👁 正在以 <b id="impName"></b> 的身份查看（管理员模拟）</span>
+  <button class="btn btn-outline btn-sm" onclick="exitImpersonate()">退出模拟</button>
+</div>
 <div class="progress-wrap" id="pw"><div class="progress-info"><span id="pl">采集进度</span><span id="pp">0/0</span></div><div class="progress-bar-bg"><div class="progress-bar-fg" id="pb"></div></div></div>
 <div class="market-bar" id="marketBar"><span class="mk-item"><span class="mk-label">👤 账号</span> <span class="mk-val" id="acctTag">--</span></span><span class="mk-item"><span class="mk-label">⛽ 燃油价格</span> <span class="mk-val">$<span id="mkFuel">--</span></span> <span class="mk-label">🌿 CO₂价格</span> <span class="mk-val">$<span id="mkCo2">--</span></span></span><span class="mk-item"><span class="mk-label">已有燃油</span> <span class="mk-val2" id="mkFuelQty">--</span> Lbs <span class="mk-label">CO₂配额</span> <span class="mk-val2" id="mkCo2Qty">--</span></span><span class="mk-item"><span class="mk-label">更新时间</span> <span id="mkTime">--</span><span class="mk-spin" id="mkSpin" style="display:none"></span></span></div>
 <div class="stats-grid">
@@ -177,6 +182,20 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 let CSRF="{{ csrf_token }}";
 let SERVER_ACCOUNT={{ account|tojson }};
 let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }};
+// ===== 会话校验 / 管理员 / 模拟身份 =====
+function logout(){fetch('/api/logout',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.href='/login'})}
+function exitImpersonate(){fetch('/api/admin/unimpersonate',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.reload()})}
+document.addEventListener('DOMContentLoaded',function(){
+  fetch('/api/session').then(function(r){return r.json()}).then(function(d){
+    if(!d.logged_in){location.href='/login';return}
+    var adminBtn=document.getElementById('btnAdmin');
+    if(d.is_admin&&adminBtn){adminBtn.style.display='inline-flex'}
+    if(d.impersonating){
+      var b=document.getElementById('impBanner');
+      if(b){b.style.display='flex';var n=document.getElementById('impName');if(n)n.textContent=d.impersonate_username||''}
+    }
+  }).catch(function(){location.href='/login'});
+});
 let fd=[],fdc=[],md=[],cs='注册号',cd='asc',_to=null,hs={},shc='',r=false,fa=true,allHubs=[],logStart=0,logTotal=0,lgBusy=false,playerSpendable=null,playerCashReserve=0;
 let fullFd=[],fullFdc=[],cacheAccount='',cacheMarket=null,cacheLastRun='',cacheTimer=null;
 const DASH_CACHE_KEY='am4-dashboard-cache-v1',DASH_CACHE_MAX_AGE=7*24*3600*1000;

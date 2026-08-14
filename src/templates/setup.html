@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>初始化 - AM4 机队中心</title>
+<style>
+:root{--bg:#f3f5f9;--card:#fff;--t:#1c2430;--t3:#8a93a3;--pri:#2563eb;--brd:#e2e6ef}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--t);
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px}
+.card{background:var(--card);border:1px solid var(--brd);border-radius:14px;box-shadow:0 8px 28px rgba(20,30,60,.08);
+  padding:28px;width:100%;max-width:400px}
+h1{font-size:1.25rem;margin-bottom:4px}
+p.sub{color:var(--t3);font-size:.85rem;margin-bottom:8px}
+label{display:block;font-size:.85rem;color:var(--t3);margin:10px 0 4px}
+input{width:100%;padding:10px 12px;border:1px solid var(--brd);border-radius:8px;font-size:1rem;outline:none}
+input:focus{border-color:var(--pri)}
+button{width:100%;margin-top:18px;padding:11px;border:0;border-radius:8px;background:var(--pri);color:#fff;
+  font-size:1rem;cursor:pointer}
+button:hover{filter:brightness(1.05)}
+.msg{font-size:.85rem;min-height:1.2em;margin-top:10px}
+.msg.ok{color:#16a34a}.msg.err{color:#dc2626}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>创建管理员</h1>
+  <p class="sub">首次使用：创建管理员账户。现有 .env 中的游戏账号会自动绑定到管理员名下。</p>
+  <label>管理员用户名</label>
+  <input id="u" autocomplete="username" autofocus>
+  <label>管理员密码（≥6 字符）</label>
+  <input id="p" type="password" autocomplete="new-password">
+  <div class="msg" id="msg"></div>
+  <button onclick="setup()">创建并登录</button>
+</div>
+<script>
+const CSRF = "{{ csrf_token }}";
+function setup(){
+  const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
+  const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
+  fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
+    body:JSON.stringify({username:u,password:p})})
+    .then(r=>r.json().then(d=>({ok:r.ok,d})))
+    .then(({ok,d})=>{
+      if(ok){ msg.className='msg ok'; msg.textContent='创建成功，正在登录…';
+        fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
+          body:JSON.stringify({username:u,password:p})})
+          .then(r=>r.json()).then(d=>{ location.href='/admin'; }).catch(()=>{ location.href='/login'; });
+      } else { msg.className='msg err'; msg.textContent=d.msg||'创建失败'; }
+    })
+    .catch(()=>{ msg.className='msg err'; msg.textContent='网络错误，请重试'; });
+}
+</script>
+</body>
+</html>

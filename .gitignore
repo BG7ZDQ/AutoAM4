@@ -3,11 +3,14 @@
 .env.*
 !.env.example
 src/.csrf_token
+src/.session_secret
+src/.service_token
 *cookiejar*
 
 # Runtime data and logs
 outputs/
 src/outputs/
+data/panel.db
 *.log
 *.log.*
 
@@ -24,6 +27,7 @@ htmlcov/
 # Temporary development artifacts
 src/fetch_*.py
 .codex-*/
+.git-stale-backup/
 *.tar.gz
 *.tmp
 *.bak
