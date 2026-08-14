@@ -157,8 +157,8 @@ python -m unittest discover -s tests
 ## 许可证与项目说明
 
 - 本项目使用 Codex 协助开发。
-- 除 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 中另行声明的第三方内容外，本仓库采用 [CC BY-NC-SA 4.0](LICENSE)：二次开发须保留署名、不得用于商业目的，并以相同许可公开分享衍生作品。
+- 除 [THIRD_PARTY_NOTICES.md](doc/THIRD_PARTY_NOTICES.md) 中另行声明的第三方内容外，本仓库采用 [CC BY-NC-SA 4.0](LICENSE)：二次开发须保留署名、不得用于商业目的，并以相同许可公开分享衍生作品。
 - 二次发布时应以合理方式保留原作者署名、原项目仓库链接和本许可证链接；如有修改，应同时说明修改内容，不限定具体署名格式。
 - 该许可证包含非商业限制，因此本项目属于 source-available，不是 OSI 定义下的开源软件。商业授权需另行取得作者许可。
-- 航线收益模型和 `data/` 中的离线基础数据参考 [AM4Help](https://am4.pages.dev/)，第三方版权与 MIT 许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-- 版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+- 航线收益模型和 `data/` 中的离线基础数据参考 [AM4Help](https://am4.pages.dev/)，第三方版权与 MIT 许可见 [THIRD_PARTY_NOTICES.md](doc/THIRD_PARTY_NOTICES.md)。
+- 版本变化见 [CHANGELOG.md](doc/CHANGELOG.md)。
