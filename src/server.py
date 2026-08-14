@@ -3903,7 +3903,10 @@ def _resume_loop_targets() -> list[tuple[str, str, dict]]:
         except Exception:
             pass
         if not password:
+            # 仅当邮箱就是 .env 引导账号时才回退 .env 密码，避免把别的账号密码错配
             password = _current_env_credentials()[1]
+            if normalize_account(email) != normalize_account(_current_env_credentials()[0]):
+                continue
         targets.append((email, password, settings))
     return targets
 
