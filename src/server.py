@@ -340,6 +340,12 @@ def _auth_gate():
     if request.method == "OPTIONS":
         return None
     path = request.path
+    # 首次启动（尚未创建管理员）：页面一律先引导到 /setup
+    if (not panel_store.admin_exists()
+            and not path.startswith("/api/")
+            and not path.startswith("/static/")):
+        if path != "/setup":
+            return redirect(url_for("setup_page"))
     if path.startswith("/static/") or path in _PUBLIC_PAGES or path in _PUBLIC_API:
         return None
     if request.headers.get("X-Service-Token", "") == _service_token:
@@ -412,13 +418,35 @@ def api_get_settings():
     acct = panel_store.get_account(user["id"]) or {}
     return jsonify({
         "ok": True,
-        "am4_email": acct.get("am4_email", ""),
         "settings": acct.get("settings") or {},
     })
 
 
 @app.route("/api/settings", methods=["PUT"])
 def api_update_settings():
+    _require_csrf()
+    user = _effective_user()
+    if user is None:
+        return jsonify({"ok": False, "msg": "未登录"}), 401
+    data = request.get_json(silent=True) or {}
+    panel_store.update_account(
+        user["id"],
+        settings=data.get("settings") or {},
+    )
+    return jsonify({"ok": True, "msg": "设置已保存，下次启动循环时生效"})
+
+
+@app.route("/api/account")
+def api_get_account():
+    user = _effective_user()
+    if user is None:
+        return jsonify({"ok": False, "msg": "未登录"}), 401
+    acct = panel_store.get_account(user["id"]) or {}
+    return jsonify({"ok": True, "am4_email": acct.get("am4_email", "")})
+
+
+@app.route("/api/account", methods=["PUT"])
+def api_update_account():
     _require_csrf()
     user = _effective_user()
     if user is None:
@@ -432,9 +460,8 @@ def api_update_settings():
         user["id"],
         am4_email=am4_email,
         am4_password=am4_password,
-        settings=data.get("settings") or {},
     )
-    return jsonify({"ok": True, "msg": "设置已保存，下次启动循环时生效"})
+    return jsonify({"ok": True, "msg": "账号已保存，下次启动循环时生效"})
 
 
 @app.route("/api/login", methods=["POST"])
