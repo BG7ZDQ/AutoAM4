@@ -4637,18 +4637,230 @@ def _runner(run: dict) -> None:
                     break
                 continue
 
-                if raw is None:
-                    break  # EOF
-                line = raw.rstrip("\n").rstrip("\r")
-                if not line.strip():
-                    continue
-                idle_since = time.time()
-                if sleep_deadline is not None:
-                    sleep_deadline = None  # 有输出说明已醒来
+            if raw is None:
+                break  # EOF
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line.strip():
+                continue
+            idle_since = time.time()
+            if sleep_deadline is not None:
+                sleep_deadline = None  # 有输出说明已醒来
 
-                # 数据行（__MARKET__/__MAINT__/__STATUS__/__AIRCRAFT__/__HUBS__/__SLEEP__）不写入日志，
-                # 避免 JSON 长行污染 /api/log 翻页与下载（噪声）
-                is_data_line = (
+            # 数据行（__MARKET__/__MAINT__/__STATUS__/__AIRCRAFT__/__HUBS__/__SLEEP__）不写入日志，
+            # 避免 JSON 长行污染 /api/log 翻页与下载（噪声）
+            is_data_line = (
+                line.startswith("__MARKET__")
+                or line.startswith("__MAINT__")
+                or line.startswith("__STATUS__")
+                or line.startswith("__AIRCRAFT__")
+                or line.startswith("__FLEET_REMOVE__")
+                or line.startswith("__HUBS__")
+                or line.startswith("__SLEEP__")
+                or line.startswith("__NEXT_TAKEOFF__")
+                or line.startswith("__TAKEOVER_TAKEOFF__")
+            )
+
+            # ⭐ 脚本宣布睡眠：__SLEEP__{秒} → 设置看门狗到期时刻
+            if line.startswith("__SLEEP__"):
+                try:
+                    secs = int(line[len("__SLEEP__"):].strip())
+                    sleep_deadline = time.time() + secs + _SLEEP_GRACE
+                except ValueError:
+                    pass
+                continue
+
+            # ⭐ 脚本直接输出市场 JSON 行: __MARKET__{json} → 写盘+更新缓存+推送 market-bar
+            if line.startswith("__MARKET__"):
+                try:
+                    mkt = json.loads(line[len("__MARKET__"):].strip())
+                    with _market_rt_lock:
+                        cache = dict(_market_rt_cache.get(key) or {})
+                        cache.update(mkt)
+                        _market_rt_cache[key] = cache
+                        _market_rt_ts[key] = time.time()
+                    _market_retry_success()
+                    try:
+                        run_paths["market"].write_text(json.dumps(mkt, ensure_ascii=False, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
+                    _broadcast_sse({"type": "market", "data": mkt, "account": email})
+                    continue
+                except Exception:
+                    pass
+
+            # ⭐ 脚本直接输出检修需求 JSON 行: __MAINT__{json} → 实时更新检修页
+            if line.startswith("__MAINT__"):
+                try:
+                    maint = json.loads(line[len("__MAINT__"):].strip())
+                    with _maint_cache_lock:
+                        _maint_cache[key] = maint
+                    _broadcast_sse({"type": "maint", "data": maint, "account": email})
+                    continue  # 不下游当普通日志
+                except Exception:
+                    pass
+
+            # 复用采集脚本已经抓过的主页全量状态，起飞待办无需立刻重复访问主页。
+            if line.startswith("__STATUS__"):
+                try:
+                    status_map = json.loads(line[len("__STATUS__"):].strip())
+                    if isinstance(status_map, dict) and status_map:
+                        with _maint_cache_lock:
+                            _home_status_cache[key] = status_map
+                            _home_status_ts[key] = time.time()
+                        _broadcast_operation_statuses(status_map, email)
+                    continue
+                except Exception:
+                    pass
+
+            # ⭐ 脚本直接输出枢纽 JSON 行: __HUBS__[names] → 前端刷新枢纽 chips/下拉
+            if line.startswith("__HUBS__"):
+                try:
+                    hubs = json.loads(line[len("__HUBS__"):].strip())
+                    _broadcast_sse({"type": "hubs", "data": hubs, "account": email})
+                    continue
+                except Exception:
+                    pass
+
+            # ⭐ 全量扫描/首页状态发现飞机后：登记或合并对应起飞待办
+            if line.startswith("__TAKEOVER_TAKEOFF__"):
+                try:
+                    tk = json.loads(line[len("__TAKEOVER_TAKEOFF__"):].strip())
+                    reg = tk.get("reg", "")
+                    route_id = str(tk.get("route_id", ""))
+                    trigger_at = float(tk.get("trigger_at", 0) or 0)
+                    if route_id and trigger_at > time.time():
+                        retrofit_block = _retrofit_blocks_takeoff(reg)
+                        if retrofit_block:
+                            _publish_log(
+                                f"🔧 {reg} 起飞待办已跳过：{retrofit_block}"
+                            )
+                            continue
+                        reason = str(tk.get("reason", "") or "")
+                        reason_label = (
+                            "返场结束" if reason == "维护/改装完成" else reason
+                        )
+                        title = (f"对 {reg} 进行起飞前需求检查（航线 {route_id}）"
+                                 if reason == "全量扫描发现" else
+                                 f"{reg} {reason_label or '落地'}后接管起飞（航线 {route_id}）")
+                        scheduled = _add_takeoff_task(
+                            reg, route_id, int(tk.get("cost_index", 200)), trigger_at,
+                            title,
+                            fid=str(tk.get("fid", "")), jitter=0,
+                            ready_at=float(tk.get("ready_at", 0) or 0),
+                            reason=reason,
+                        )
+                        if (reason in {"维护/改装完成", "返场结束"}
+                                and (not scheduled.get("deduplicated")
+                                     or scheduled.get("trigger_changed"))):
+                            remaining = max(0, int(
+                                float(scheduled.get("trigger_at", trigger_at)) - time.time()
+                            ))
+                            _publish_log(
+                                f"{reg} 维护中，预计 {remaining // 60} 分钟后完成"
+                            )
+                    continue
+                except Exception:
+                    pass
+
+            # ⭐ 需求检查起飞成功后：按本次飞行落地时间排「下次起飞」待办
+            if line.startswith("__NEXT_TAKEOFF__"):
+                try:
+                    tk = json.loads(line[len("__NEXT_TAKEOFF__"):].strip())
+                    reg = tk.get("reg", "")
+                    route_id = str(tk.get("route_id", ""))
+                    secs = int(tk.get("flight_secs", 0) or 0)
+                    ci = int(tk.get("cost_index", 200))
+                    if route_id and secs > 0:
+                        delay = secs + _TAKEOFF_READY_BUFFER_SECONDS
+                        ready_at = time.time() + secs
+                        _add_pending_task(
+                            "takeoff",
+                            f"{reg} 下次起飞（航线 {route_id}）",
+                            time.time() + delay,
+                            {"route_id": route_id, "reg": reg, "cost_index": ci,
+                             "ready_at": ready_at, "reason": "本次飞行落地"},
+                            jitter=0,
+                        )
+                    continue
+                except Exception:
+                    pass
+
+            # ⭐ 脚本直接输出 JSON 飞机数据行: __AIRCRAFT__{json}
+            if line.startswith("__FLEET_REMOVE__"):
+                try:
+                    removed = json.loads(line[len("__FLEET_REMOVE__"):])
+                    _cancel_removed_aircraft_tasks(removed)
+                    _broadcast_sse({"type": "fleet_remove", "data": removed,
+                                    "account": email})
+                    continue
+                except Exception:
+                    pass
+
+            # ⭐ 脚本直接输出 JSON 飞机数据行: __AIRCRAFT__{json}
+            if line.startswith("__AIRCRAFT__"):
+                try:
+                    ac = json.loads(line[len("__AIRCRAFT__"):])
+                    with _maint_cache_lock:
+                        live_statuses = dict(_home_status_cache.get(key) or {})
+                    ac_status = live_statuses.get(str(ac.get("飞机ID", "")), {})
+                    if not ac_status:
+                        target_reg = str(ac.get("注册号", "")).strip().upper()
+                        ac_status = next((item for item in live_statuses.values()
+                                          if isinstance(item, dict) and str(
+                                              item.get("注册号", "")).strip().upper() == target_reg), {})
+                    _decorate_operation_state(ac, ac_status)
+                    ac_key = str(ac.get("飞机ID") or ac.get("注册号") or "")
+                    if ac_key:
+                        seen_aircraft_ids.add(ac_key)
+                    current = len(seen_aircraft_ids)
+                    run["progress_current"] = current
+                    if not run["progress_total"]:
+                        run["progress_total"] = current
+                    elif current > run["progress_total"]:
+                        # 实际采集量可能超过页面预估值（如机型分组统计偏差），以实际为准
+                        run["progress_total"] = current
+                    _broadcast_sse({
+                        "type": "aircraft",
+                        "data": ac,
+                        "count": current,
+                        "total": run["progress_total"],
+                        "account": email,
+                    })
+                    continue  # 不下游当普通日志显示
+                except Exception:
+                    pass
+
+            # 普通文本日志直接显示；解析失败的数据行只给简短提示，避免长 JSON 刷屏
+            if not is_data_line:
+                _append_log(line)
+                _broadcast_sse({"type": "log", "line": line, "account": email})
+            else:
+                tag = line.split("{", 1)[0].strip("_").strip()
+                _append_log(f"⚠ 数据行解析失败: {tag}")
+                _broadcast_sse({"type": "log", "line": f"⚠ 数据行解析失败: {tag}",
+                                "account": email})
+
+            # 解析进度行（备用）
+            m = _AIR_DETAIL_RE.search(line)
+            if m:
+                total = int(m.group(2))
+                run["progress_total"] = total
+
+                _broadcast_sse({
+                    "type": "progress",
+                    "current": run.get("progress_current", 0),
+                    "total": total,
+                    "account": email,
+                })
+
+        # 进程结束后清空残余行（防日志丢失；同样跳过数据行噪声）
+        try:
+            while True:
+                raw = line_q.get_nowait()
+                if raw is None:
+                    break
+                line = raw.rstrip("\n").rstrip("\r")
+                if line.strip() and not (
                     line.startswith("__MARKET__")
                     or line.startswith("__MAINT__")
                     or line.startswith("__STATUS__")
@@ -4658,223 +4870,11 @@ def _runner(run: dict) -> None:
                     or line.startswith("__SLEEP__")
                     or line.startswith("__NEXT_TAKEOFF__")
                     or line.startswith("__TAKEOVER_TAKEOFF__")
-                )
-
-                # ⭐ 脚本宣布睡眠：__SLEEP__{秒} → 设置看门狗到期时刻
-                if line.startswith("__SLEEP__"):
-                    try:
-                        secs = int(line[len("__SLEEP__"):].strip())
-                        sleep_deadline = time.time() + secs + _SLEEP_GRACE
-                    except ValueError:
-                        pass
-                    continue
-
-                # ⭐ 脚本直接输出市场 JSON 行: __MARKET__{json} → 写盘+更新缓存+推送 market-bar
-                if line.startswith("__MARKET__"):
-                    try:
-                        mkt = json.loads(line[len("__MARKET__"):].strip())
-                        with _market_rt_lock:
-                            cache = dict(_market_rt_cache.get(key) or {})
-                            cache.update(mkt)
-                            _market_rt_cache[key] = cache
-                            _market_rt_ts[key] = time.time()
-                        _market_retry_success()
-                        try:
-                            run_paths["market"].write_text(json.dumps(mkt, ensure_ascii=False, indent=2), encoding="utf-8")
-                        except Exception:
-                            pass
-                        _broadcast_sse({"type": "market", "data": mkt, "account": email})
-                        continue
-                    except Exception:
-                        pass
-
-                # ⭐ 脚本直接输出检修需求 JSON 行: __MAINT__{json} → 实时更新检修页
-                if line.startswith("__MAINT__"):
-                    try:
-                        maint = json.loads(line[len("__MAINT__"):].strip())
-                        with _maint_cache_lock:
-                            _maint_cache[key] = maint
-                        _broadcast_sse({"type": "maint", "data": maint, "account": email})
-                        continue  # 不下游当普通日志
-                    except Exception:
-                        pass
-
-                # 复用采集脚本已经抓过的主页全量状态，起飞待办无需立刻重复访问主页。
-                if line.startswith("__STATUS__"):
-                    try:
-                        status_map = json.loads(line[len("__STATUS__"):].strip())
-                        if isinstance(status_map, dict) and status_map:
-                            with _maint_cache_lock:
-                                _home_status_cache[key] = status_map
-                                _home_status_ts[key] = time.time()
-                            _broadcast_operation_statuses(status_map, email)
-                        continue
-                    except Exception:
-                        pass
-
-                # ⭐ 脚本直接输出枢纽 JSON 行: __HUBS__[names] → 前端刷新枢纽 chips/下拉
-                if line.startswith("__HUBS__"):
-                    try:
-                        hubs = json.loads(line[len("__HUBS__"):].strip())
-                        _broadcast_sse({"type": "hubs", "data": hubs, "account": email})
-                        continue
-                    except Exception:
-                        pass
-
-                # ⭐ 全量扫描/首页状态发现飞机后：登记或合并对应起飞待办
-                if line.startswith("__TAKEOVER_TAKEOFF__"):
-                    try:
-                        tk = json.loads(line[len("__TAKEOVER_TAKEOFF__"):].strip())
-                        reg = tk.get("reg", "")
-                        route_id = str(tk.get("route_id", ""))
-                        trigger_at = float(tk.get("trigger_at", 0) or 0)
-                        if route_id and trigger_at > time.time():
-                            retrofit_block = _retrofit_blocks_takeoff(reg)
-                            if retrofit_block:
-                                _publish_log(
-                                    f"🔧 {reg} 起飞待办已跳过：{retrofit_block}"
-                                )
-                                continue
-                            reason = str(tk.get("reason", "") or "")
-                            reason_label = (
-                                "返场结束" if reason == "维护/改装完成" else reason
-                            )
-                            title = (f"对 {reg} 进行起飞前需求检查（航线 {route_id}）"
-                                     if reason == "全量扫描发现" else
-                                     f"{reg} {reason_label or '落地'}后接管起飞（航线 {route_id}）")
-                            scheduled = _add_takeoff_task(
-                                reg, route_id, int(tk.get("cost_index", 200)), trigger_at,
-                                title,
-                                fid=str(tk.get("fid", "")), jitter=0,
-                                ready_at=float(tk.get("ready_at", 0) or 0),
-                                reason=reason,
-                            )
-                            if (reason in {"维护/改装完成", "返场结束"}
-                                    and (not scheduled.get("deduplicated")
-                                         or scheduled.get("trigger_changed"))):
-                                remaining = max(0, int(
-                                    float(scheduled.get("trigger_at", trigger_at)) - time.time()
-                                ))
-                                _publish_log(
-                                    f"{reg} 维护中，预计 {remaining // 60} 分钟后完成"
-                                )
-                        continue
-                    except Exception:
-                        pass
-
-                # ⭐ 需求检查起飞成功后：按本次飞行落地时间排「下次起飞」待办
-                if line.startswith("__NEXT_TAKEOFF__"):
-                    try:
-                        tk = json.loads(line[len("__NEXT_TAKEOFF__"):].strip())
-                        reg = tk.get("reg", "")
-                        route_id = str(tk.get("route_id", ""))
-                        secs = int(tk.get("flight_secs", 0) or 0)
-                        ci = int(tk.get("cost_index", 200))
-                        if route_id and secs > 0:
-                            delay = secs + _TAKEOFF_READY_BUFFER_SECONDS
-                            ready_at = time.time() + secs
-                            _add_pending_task(
-                                "takeoff",
-                                f"{reg} 下次起飞（航线 {route_id}）",
-                                time.time() + delay,
-                                {"route_id": route_id, "reg": reg, "cost_index": ci,
-                                 "ready_at": ready_at, "reason": "本次飞行落地"},
-                                jitter=0,
-                            )
-                        continue
-                    except Exception:
-                        pass
-
-                # ⭐ 脚本直接输出 JSON 飞机数据行: __AIRCRAFT__{json}
-                if line.startswith("__FLEET_REMOVE__"):
-                    try:
-                        removed = json.loads(line[len("__FLEET_REMOVE__"):])
-                        _cancel_removed_aircraft_tasks(removed)
-                        _broadcast_sse({"type": "fleet_remove", "data": removed,
-                                        "account": email})
-                        continue
-                    except Exception:
-                        pass
-
-                # ⭐ 脚本直接输出 JSON 飞机数据行: __AIRCRAFT__{json}
-                if line.startswith("__AIRCRAFT__"):
-                    try:
-                        ac = json.loads(line[len("__AIRCRAFT__"):])
-                        with _maint_cache_lock:
-                            live_statuses = dict(_home_status_cache.get(key) or {})
-                        ac_status = live_statuses.get(str(ac.get("飞机ID", "")), {})
-                        if not ac_status:
-                            target_reg = str(ac.get("注册号", "")).strip().upper()
-                            ac_status = next((item for item in live_statuses.values()
-                                              if isinstance(item, dict) and str(
-                                                  item.get("注册号", "")).strip().upper() == target_reg), {})
-                        _decorate_operation_state(ac, ac_status)
-                        ac_key = str(ac.get("飞机ID") or ac.get("注册号") or "")
-                        if ac_key:
-                            seen_aircraft_ids.add(ac_key)
-                        current = len(seen_aircraft_ids)
-                        run["progress_current"] = current
-                        if not run["progress_total"]:
-                            run["progress_total"] = current
-                        elif current > run["progress_total"]:
-                            # 实际采集量可能超过页面预估值（如机型分组统计偏差），以实际为准
-                            run["progress_total"] = current
-                        _broadcast_sse({
-                            "type": "aircraft",
-                            "data": ac,
-                            "count": current,
-                            "total": run["progress_total"],
-                            "account": email,
-                        })
-                        continue  # 不下游当普通日志显示
-                    except Exception:
-                        pass
-
-                # 普通文本日志直接显示；解析失败的数据行只给简短提示，避免长 JSON 刷屏
-                if not is_data_line:
+                ):
                     _append_log(line)
                     _broadcast_sse({"type": "log", "line": line, "account": email})
-                else:
-                    tag = line.split("{", 1)[0].strip("_").strip()
-                    _append_log(f"⚠ 数据行解析失败: {tag}")
-                    _broadcast_sse({"type": "log", "line": f"⚠ 数据行解析失败: {tag}",
-                                    "account": email})
-
-                # 解析进度行（备用）
-                m = _AIR_DETAIL_RE.search(line)
-                if m:
-                    total = int(m.group(2))
-                    run["progress_total"] = total
-
-                    _broadcast_sse({
-                        "type": "progress",
-                        "current": run.get("progress_current", 0),
-                        "total": total,
-                        "account": email,
-                    })
-
-            # 进程结束后清空残余行（防日志丢失；同样跳过数据行噪声）
-            try:
-                while True:
-                    raw = line_q.get_nowait()
-                    if raw is None:
-                        break
-                    line = raw.rstrip("\n").rstrip("\r")
-                    if line.strip() and not (
-                        line.startswith("__MARKET__")
-                        or line.startswith("__MAINT__")
-                        or line.startswith("__STATUS__")
-                        or line.startswith("__AIRCRAFT__")
-                        or line.startswith("__FLEET_REMOVE__")
-                        or line.startswith("__HUBS__")
-                        or line.startswith("__SLEEP__")
-                        or line.startswith("__NEXT_TAKEOFF__")
-                        or line.startswith("__TAKEOVER_TAKEOFF__")
-                    ):
-                        _append_log(line)
-                        _broadcast_sse({"type": "log", "line": line, "account": email})
-            except queue.Empty:
-                pass
+        except queue.Empty:
+            pass
 
             proc.wait()
             if (not run.get("stop_requested") and not run["error"]
