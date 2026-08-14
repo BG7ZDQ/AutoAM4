@@ -54,11 +54,11 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
   <div id="ub" class="user-cards"></div>
 </div>
 <div class="card">
-  <h3>管理日志</h3>
-  <div style="display:flex;gap:10px;margin:8px 0">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <h3>管理日志</h3>
     <button class="btn-ghost" onclick="loadAudit()">刷新</button>
-    <span id="auditInfo" style="font-size:.8rem;color:var(--t3);align-self:center"></span>
   </div>
+  <div id="auditInfo" style="font-size:.8rem;color:var(--t3);margin-bottom:8px"></div>
   <pre id="auditLog" style="max-height:360px;overflow:auto;background:#f8fafc;
     border:1px solid var(--brd);border-radius:8px;padding:10px;font-size:.78rem;
     line-height:1.5;white-space:pre-wrap;word-break:break-all;margin:0"></pre>
