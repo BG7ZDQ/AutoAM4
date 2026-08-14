@@ -26,11 +26,16 @@ button:hover{filter:brightness(1.05)}
 <body>
 <div class="card">
   <h1>创建管理员</h1>
-  <p class="sub">首次使用：创建管理员账户。现有 .env 中的游戏账号会自动绑定到管理员名下。</p>
+  <p class="sub">首次使用：创建管理员账户（纯管理，不绑定游戏账号）。下方可选把现有 .env 中的游戏账号接入为普通用户。</p>
   <label>管理员用户名</label>
   <input id="u" autocomplete="username" autofocus>
   <label>管理员密码（≥6 字符）</label>
   <input id="p" type="password" autocomplete="new-password">
+  <div style="border-top:1px dashed var(--brd);margin:18px 0 4px"></div>
+  <label>接入 .env 游戏账号？用户名（可选，留空则跳过）</label>
+  <input id="bu" autocomplete="off" placeholder="例如：main">
+  <label>该用户的登录密码（可选）</label>
+  <input id="bp" type="password" autocomplete="new-password">
   <div class="msg" id="msg"></div>
   <button onclick="setup()">创建并登录</button>
 </div>
@@ -38,9 +43,10 @@ button:hover{filter:brightness(1.05)}
 const CSRF = "{{ csrf_token }}";
 function setup(){
   const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
+  const bu=document.getElementById('bu').value.trim(), bp=document.getElementById('bp').value;
   const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
   fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
-    body:JSON.stringify({username:u,password:p})})
+    body:JSON.stringify({username:u,password:p,bootstrap_username:bu,bootstrap_password:bp})})
     .then(r=>r.json().then(d=>({ok:r.ok,d})))
     .then(({ok,d})=>{
       if(ok){ msg.className='msg ok'; msg.textContent='创建成功，正在登录…';

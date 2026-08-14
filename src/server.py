@@ -308,9 +308,8 @@ def _session_account() -> dict:
         return {"email": "", "password": "", "settings": dict(panel_store.DEFAULT_SETTINGS)}
     acct = panel_store.get_account(user["id"])
     if acct is None:
-        # 未绑游戏账号（如管理员）回退到当前循环账号，便于直接查看运行数据
-        email, password = _active_credentials()
-        return {"email": email, "password": password, "settings": {}}
+        # 纯管理/未绑号用户：不关联任何游戏账号，启动循环时提示先绑定
+        return {"email": "", "password": "", "settings": {}}
     return {
         "email": acct.get("am4_email", ""),
         "password": acct.get("am4_password", ""),
@@ -490,15 +489,30 @@ def api_setup():
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
     try:
-        email, pwd = _current_env_credentials()
+        # 管理员是纯管理账户：不绑定任何游戏账号
         panel_store.create_user(
             username, password, is_admin=True, status="active",
-            am4_email=email, am4_password=pwd,
-            settings=data.get("settings") or {},
         )
     except ValueError as exc:
         return jsonify({"ok": False, "msg": str(exc)}), 400
-    return jsonify({"ok": True, "msg": "管理员创建成功，请登录"})
+    messages = ["管理员创建成功，请登录"]
+    # 可选：把 .env 中的游戏账号接入为普通用户（管理员不持有业务账号）
+    env_email, env_password = _current_env_credentials()
+    bootstrap_user = str(data.get("bootstrap_username", "")).strip()
+    bootstrap_pass = str(data.get("bootstrap_password", ""))
+    if bootstrap_user and bootstrap_pass:
+        if not env_email:
+            messages.append("未检测到 .env 游戏账号，跳过接入")
+        else:
+            try:
+                panel_store.create_user(
+                    bootstrap_user, bootstrap_pass, is_admin=False, status="active",
+                    am4_email=env_email, am4_password=env_password,
+                )
+                messages.append(f"已将 {env_email} 接入为普通用户 {bootstrap_user}")
+            except ValueError as exc:
+                messages.append(f"接入失败：{exc}")
+    return jsonify({"ok": True, "msg": "；".join(messages)})
 
 
 @app.route("/api/logout", methods=["POST"])
