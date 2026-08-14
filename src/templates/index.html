@@ -149,7 +149,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <div class="stat-card warn"><div class="label">枢纽数</div><div class="value" id="sh">--</div><div class="sub">个基地</div></div>
 <div class="stat-card success"><div class="label">余额</div><div class="value" id="sb">--</div><div class="sub">账户资金</div></div>
 </div>
-<div class="tabs"><div class="tab active" data-tab="fleet" onclick="st('fleet')">机队</div><div class="tab" data-tab="route" onclick="st('route')">开辟</div><div class="tab" data-tab="pending" onclick="st('pending')">待办</div><div class="tab" data-tab="maintenance" onclick="st('maintenance')">检修</div><div class="tab" data-tab="log" onclick="st('log')">日志</div><div class="tab" data-tab="settings" onclick="st('settings')">设置</div></div>
+<div class="tabs"><div class="tab active" data-tab="fleet" onclick="st('fleet')">机队</div><div class="tab" data-tab="route" onclick="st('route')">开辟</div><div class="tab" data-tab="pending" onclick="st('pending')">待办</div><div class="tab" data-tab="maintenance" onclick="st('maintenance')">检修</div><div class="tab" data-tab="settings" onclick="st('settings')">设置</div><div class="tab" data-tab="log" onclick="st('log')">日志</div></div>
 <div class="tab-content" id="tabFleet"><div class="hub-chips" id="hubChips"></div><div class="toolbar"><input class="search-box" id="si" placeholder="搜索注册号/机型..." oninput="ds()"><select class="filter-select" id="hf" onchange="oh()"><option value="">🏢 全部枢纽</option></select><button class="btn btn-outline btn-sm" onclick="rf()">✕ 重置</button></div><div class="msec-head"><span>🛫 客机 <span class="msec-sub" id="fiPax"></span></span><button class="btn btn-outline btn-sm" onclick="tog('paxWrap',this)">▼ 收起</button></div><div class="table-wrap" id="paxWrap"><div class="table-scroll"><table id="ft"><thead><tr><th data-sort="注册号" onclick="sf('注册号')">注册号<span class="sort-arrow"></span></th><th data-sort="枢纽分类" onclick="sf('枢纽分类')">枢纽</th><th data-sort="飞行时长" onclick="sf('飞行时长')">时长</th><th data-sort="改装状态" onclick="sf('改装状态')">改装</th><th data-sort="需求状态" onclick="sf('需求状态')">需求</th></tr></thead><tbody id="fb"><tr><td colspan="5" class="empty"><div class="icon">📭</div>暂无客机数据</td></tr></tbody></table></div></div><div class="msec-head" style="margin-top:16px"><span>📦 货机 <span class="msec-sub" id="fiCargo"></span></span><button class="btn btn-outline btn-sm" onclick="tog('cargoWrap',this)">▼ 收起</button></div><div class="table-wrap" id="cargoWrap"><div class="table-scroll"><table id="ftc"><thead><tr><th>注册号</th><th>枢纽</th><th>时长</th><th>改装</th><th>需求</th></tr></thead><tbody id="fbc"><tr><td colspan="5" class="empty"><div class="icon">📭</div>暂无货机数据</td></tr></tbody></table></div></div><div style="margin-top:8px;font-size:.75rem;color:var(--t3)" id="fi"></div></div>
 <script>
 /* 在其余页面尚未下载完成时，先用浏览器缓存恢复首屏机队。 */
@@ -189,7 +189,6 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <div class="tab-content" id="tabSettings" style="display:none">
 <div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:16px;max-width:720px">
 <div class="msec-head"><span>⚙️ 自动化设置</span></div>
-<div style="margin-top:4px;font-size:.8rem;color:var(--t3)">AM4 账号：<b id="setAcctEmail" style="color:var(--t)">--</b>（注册时绑定，不可修改）</div>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
 <div><label class="set-label">起飞成本指数</label><input class="set-in" id="setCostIndex" type="number" min="0" max="200"></div>
 <div><label class="set-label">最低燃油（Lbs，低于则停飞）</label><input class="set-in" id="setMinFuel" type="number" min="0"></div>
@@ -220,7 +219,7 @@ let SERVER_ACCOUNT={{ account|tojson }};
 let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }};
 // ===== 会话校验 / 管理员 / 模拟身份 =====
 function logout(){fetch('/api/logout',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.href='/login'})}
-function exitImpersonate(){fetch('/api/admin/unimpersonate',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.reload()})}
+function exitImpersonate(){fetch('/api/admin/unimpersonate',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.href='/admin'})}
 document.addEventListener('DOMContentLoaded',function(){
   fetch('/api/session').then(function(r){return r.json()}).then(function(d){
     if(!d.logged_in){location.href='/login';return}
@@ -658,10 +657,6 @@ function tickPending() {
 function st(t){window.__AM4_ACTIVE_TAB=t;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===t));document.querySelectorAll('.tab-content').forEach(x=>x.style.display='none');let target=document.getElementById('tab'+t.charAt(0).toUpperCase()+t.slice(1));if(target)target.style.display='block';if(t==='pending')lp();if(t==='settings')loadSettings();if(t==='log'){let lc=document.getElementById('lc');requestAnimationFrame(()=>{lc.scrollTop=lc.scrollHeight})}}
 function setVal(id,v){let el=document.getElementById(id);if(el)el.value=(v==null?'':v)}
 function loadSettings(){
-  fetch('/api/account').then(function(r){return r.json()}).then(function(d){
-    let el=document.getElementById('setAcctEmail');
-    if(el)el.textContent=d.am4_email||'--';
-  }).catch(function(){});
   fetch('/api/settings').then(function(r){return r.json()}).then(function(d){
     if(!d.ok)return;let s=d.settings||{};
     setVal('setCostIndex',s.cost_index);setVal('setMinFuel',s.min_fuel);
