@@ -449,27 +449,6 @@ def api_get_account():
     return jsonify({"ok": True, "am4_email": acct.get("am4_email", "")})
 
 
-@app.route("/api/account", methods=["PUT"])
-def api_update_account():
-    _require_csrf()
-    user = _effective_user()
-    if user is None:
-        return jsonify({"ok": False, "msg": "未登录"}), 401
-    if _is_admin_request() and not session.get("impersonate_uid"):
-        return jsonify({"ok": False, "msg": "管理员无需绑定业务账号"}), 403
-    data = request.get_json(silent=True) or {}
-    am4_email = str(data.get("am4_email", "")).strip()
-    am4_password = str(data.get("am4_password", ""))
-    if not am4_email or not am4_password:
-        return jsonify({"ok": False, "msg": "AM4 游戏账号和密码不能为空"}), 400
-    panel_store.update_account(
-        user["id"],
-        am4_email=am4_email,
-        am4_password=am4_password,
-    )
-    return jsonify({"ok": True, "msg": "账号已保存，下次启动循环时生效"})
-
-
 @app.route("/api/login", methods=["POST"])
 def api_login():
     data = request.get_json(silent=True) or {}
