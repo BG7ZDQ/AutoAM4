@@ -133,7 +133,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <button class="btn btn-success" id="btnRunLoop" onclick="run('loop')"{% if initial_running %} style="display:none"{% endif %}><span class="b-full">🔁 循环运行</span><span class="b-short">🔁 循环</span></button>
 <button class="btn btn-danger" id="btnStop" onclick="stop()" style="display:{{ 'inline-flex' if initial_running else 'none' }}">⏹ 停止</button>
 </div></div>
-<div class="imp-banner" id="impBanner" style="display:none;align-items:center;gap:10px;background:var(--card);border:1px solid var(--wr);border-radius:var(--r);padding:8px 14px;margin-bottom:16px;font-size:.85rem">
+<div class="imp-banner" id="impBanner" style="display:none;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;background:var(--card);border:1px solid var(--wr);border-radius:var(--r);padding:8px 14px;margin-bottom:16px;font-size:.85rem">
   <span>👁 正在以 <b id="impName"></b> 的身份查看</span>
   <button class="btn btn-outline btn-sm" onclick="exitImpersonate()">退出模拟</button>
 </div>
