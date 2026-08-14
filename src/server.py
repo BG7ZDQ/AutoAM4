@@ -595,6 +595,8 @@ def api_login():
         return jsonify({"ok": False, "msg": "尝试次数过多，请 15 分钟后再试"}), 429
     user = panel_store.get_user_by_username(username)
     if user is None or not panel_store.verify_password(user, password):
+        if user is not None and user.get("is_admin"):
+            _audit("登录失败", target=username, result="fail")
         _record_login_failure(username)
         return jsonify({"ok": False, "msg": "用户名或密码错误"}), 401
     _clear_login_failures(username)
@@ -606,6 +608,8 @@ def api_login():
     session.clear()
     session["uid"] = user["id"]
     session["csrf"] = secrets.token_urlsafe(24)
+    if user.get("is_admin"):
+        _audit("登录", target=username, result="ok")
     return jsonify({
         "ok": True,
         "username": user.get("username"),
@@ -712,6 +716,8 @@ def api_admin_user_status(uid: int):
         # 后续自动化由 _account_protected 的停用检查统一拒绝
         account = panel_store.get_account(uid) or {}
         _stop_run_for_email(account.get("am4_email", ""))
+    _audit("用户状态", target=target.get("username", ""),
+           detail=f"{target.get('status')}->{status}")
     return jsonify({"ok": True})
 
 
@@ -734,6 +740,7 @@ def api_admin_user_password(uid: int):
         panel_store.set_user_password(uid, password)
     except ValueError as exc:
         return jsonify({"ok": False, "msg": str(exc)}), 400
+    _audit("重置密码", target=target.get("username", ""), result="ok")
     return jsonify({"ok": True, "msg": "密码已重置"})
 
 
@@ -753,6 +760,7 @@ def api_admin_delete_user(uid: int):
     email = account.get("am4_email", "")
     panel_store.delete_user(uid)
     _stop_run_for_email(email)
+    _audit("删除用户", target=target.get("username", ""), result="ok")
     return jsonify({"ok": True})
 
 
@@ -770,13 +778,20 @@ def api_admin_impersonate():
     if target is None or target.get("status") != "active":
         return jsonify({"ok": False, "msg": "目标账号不存在或未激活"}), 400
     session["impersonate_uid"] = target_id
+    _audit("模拟进入", target=target.get("username", ""), result="ok")
     return jsonify({"ok": True, "username": target.get("username")})
 
 
 @app.route("/api/admin/unimpersonate", methods=["POST"])
 def api_admin_unimpersonate():
     _require_csrf()
+    prev_id = session.get("impersonate_uid")
+    prev_name = ""
+    if prev_id:
+        prev = panel_store.get_user_by_id(prev_id)
+        prev_name = (prev or {}).get("username", "") if prev else ""
     session.pop("impersonate_uid", None)
+    _audit("退出模拟", target=prev_name, result="ok")
     return jsonify({"ok": True})
 
 
@@ -911,11 +926,13 @@ def _bootstrap_admin_from_env() -> None:
                 _append_log(f"⚠ .env 管理员创建失败：{exc}")
                 return
             _append_log(f"👑 已从 .env 创建管理员 {username}")
+            _audit("创建管理员", target=username, result="ok", detail=".env")
             return
         if admin.get("is_admin") and not panel_store.verify_password(admin, password):
             # 服务器配置为准：操作者通过 .env 修改管理员密码
             panel_store.set_user_password(admin["id"], password)
             _append_log(f"👑 已按 .env 更新管理员 {username} 的密码")
+            _audit("配置同步密码", target=username, result="ok", detail=".env")
     except Exception:
         pass
 
@@ -1070,6 +1087,64 @@ def _append_log(line: str, paths: dict | None = None):
         lf = (paths or _paths())["log"]
         with lf.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
+    except Exception:
+        pass
+
+
+# ===== 管理员审计日志 =====
+# 管理员的关键操作单独落盘（与账号运行日志分开），启动时轮转备份并清理旧备份。
+_AUDIT_LOG = ROOT / "data" / "admin_audit.log"
+_AUDIT_LOCK = threading.Lock()
+
+
+def _audit(action: str, target: str = "", result: str = "ok",
+           detail: str = "") -> None:
+    """记录一条管理员操作审计（actor 取当前会话管理员；无会话时记 env）。"""
+    try:
+        actor = "env"
+        try:
+            user = _real_user()
+            if user:
+                actor = str(user.get("username", "")) or "admin"
+        except Exception:
+            pass
+        line = f"{_now_bjt().strftime('%Y-%m-%d %H:%M:%S')} | {actor} | {action} | {target} | {result}"
+        if detail:
+            line += f" | {detail}"
+        with _AUDIT_LOCK:
+            _AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with _AUDIT_LOG.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def _rotate_audit_log() -> None:
+    """启动时轮转审计日志：旧内容备份为 admin_audit_<时间戳>.log.bak。"""
+    try:
+        if _AUDIT_LOG.exists() and _AUDIT_LOG.stat().st_size > 0:
+            ts = _now_bjt().strftime("%Y%m%d_%H%M%S")
+            bak = _AUDIT_LOG.with_name(f"admin_audit_{ts}.log.bak")
+            _AUDIT_LOG.replace(bak)
+    except Exception:
+        pass
+
+
+def _cleanup_old_logs(days: int = 30) -> None:
+    """删除 30 天前的审计日志备份与各账号运行日志备份。"""
+    cutoff = time.time() - days * 86400
+    try:
+        for p in _AUDIT_LOG.parent.glob("admin_audit_*.log.bak"):
+            if p.stat().st_mtime < cutoff:
+                p.unlink(missing_ok=True)
+    except Exception:
+        pass
+    try:
+        for d in OUTPUTS_ROOT.iterdir():
+            if d.is_dir():
+                for p in d.glob("run_log_*.txt.bak"):
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink(missing_ok=True)
     except Exception:
         pass
 
@@ -4645,6 +4720,8 @@ def api_stop():
 
 
 # 所有调度器会调用的辅助函数和路由均已定义后，再恢复任务并启动线程。
+_rotate_audit_log()
+_cleanup_old_logs()
 _load_pending_tasks()
 _loop_account_settings = _load_settings_for_email(_active_credentials()[0])
 _bootstrap_admin_from_env()
