@@ -129,7 +129,6 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <div class="header"><div class="header-main"><h1><span class="icon">✈</span> AM4 机队中心 <span class="sse-dot off" id="sseDot"></span></h1><div class="header-meta"><span class="status-chip{{ ' running' if initial_running else '' }}" id="runChip"><span class="dot"></span><span id="runChipTxt">{{ '运行中' if initial_running else '空闲' }}</span></span></div></div>
 <div class="header-actions">
 <button class="btn btn-outline btn-sm btn-icon" id="btnTheme" onclick="toggleTheme()">🌙</button>
-<button class="btn btn-outline btn-sm" id="btnAdmin" style="display:none" onclick="goAdmin()">🛠 管理</button>
 <button class="btn btn-outline btn-sm" onclick="refreshAll()">🔄 刷新</button>
 <button class="btn btn-success" id="btnRunLoop" onclick="run('loop')"{% if initial_running %} style="display:none"{% endif %}><span class="b-full">🔁 循环运行</span><span class="b-short">🔁 循环</span></button>
 <button class="btn btn-danger" id="btnStop" onclick="stop()" style="display:{{ 'inline-flex' if initial_running else 'none' }}">⏹ 停止</button>
@@ -220,22 +219,9 @@ let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }};
 // ===== 会话校验 / 管理员 / 模拟身份 =====
 function logout(){fetch('/api/logout',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.href='/login'})}
 function exitImpersonate(){fetch('/api/admin/unimpersonate',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.href='/admin'})}
-function goAdmin(){
-  if(MY_SESSION&&MY_SESSION.impersonating){
-    fetch('/api/admin/unimpersonate',{method:'POST',headers:{'X-CSRF-Token':CSRF}})
-      .then(function(){location.href='/admin'})
-      .catch(function(){location.href='/admin'});
-  }else{
-    location.href='/admin';
-  }
-}
-let MY_SESSION=null;
 document.addEventListener('DOMContentLoaded',function(){
   fetch('/api/session').then(function(r){return r.json()}).then(function(d){
     if(!d.logged_in){location.href='/login';return}
-    MY_SESSION=d;
-    var adminBtn=document.getElementById('btnAdmin');
-    if(d.is_admin&&adminBtn){adminBtn.style.display='inline-flex'}
     if(d.is_admin&&!d.am4_email&&!d.impersonating){
       var ab=document.getElementById('adminBanner');
       if(ab)ab.style.display='flex';
