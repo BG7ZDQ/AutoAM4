@@ -318,6 +318,9 @@ _register_attempts: dict[str, list[float]] = {}
 _VERIFY_LIMIT_PER_HOUR = 10
 _verify_attempts: dict[str, list[float]] = {}
 _verify_lock = threading.Lock()
+_SETUP_LIMIT_PER_HOUR = 10
+_setup_attempts: dict[str, list[float]] = {}
+_setup_lock = threading.Lock()
 
 
 def _login_blocked(username: str) -> bool:
@@ -666,6 +669,25 @@ def _verify_blocked(ip: str) -> bool:
         return False
 
 
+def _setup_blocked(ip: str) -> bool:
+    """初始化接口按来源 IP 限流，防止爆破初始化令牌或批量创建管理员。"""
+    now = time.time()
+    key = ip or "unknown"
+    with _setup_lock:
+        lst = [t for t in _setup_attempts.get(key, []) if now - t < 3600]
+        _setup_attempts[key] = lst
+        if len(lst) >= _SETUP_LIMIT_PER_HOUR:
+            return True
+        lst.append(now)
+        if len(_setup_attempts) > 2000:
+            cutoff = now - 3600
+            pruned = {k: [t for t in v if t >= cutoff]
+                      for k, v in _setup_attempts.items() if v}
+            _setup_attempts.clear()
+            _setup_attempts.update(pruned)
+        return False
+
+
 def _verify_am4_credentials(email: str, password: str) -> tuple[bool, str]:
     """用独立临时 Cookie 罐尝试 AM4 登录；不影响主会话与各账号采集循环。"""
     import collector as ext
@@ -708,6 +730,8 @@ def api_verify_am4():
 @app.route("/api/setup", methods=["POST"])
 def api_setup():
     _require_csrf()
+    if _setup_blocked(request.remote_addr or "unknown"):
+        return jsonify({"ok": False, "msg": "初始化请求过于频繁，请稍后再试"}), 429
     if panel_store.admin_exists():
         return jsonify({"ok": False, "msg": "管理员已存在"}), 403
     if not _SETUP_TOKEN:
@@ -4408,6 +4432,76 @@ def _start_loop(email: str, password: str, settings: dict, mode: str) -> tuple[b
     _broadcast_sse({"type": "start", "mode": mode, "account": email})
     threading.Thread(target=_runner, args=(run,), daemon=True).start()
     return True, "ok"
+
+
+def _all_loop_targets() -> list[tuple[str, str, dict]]:
+    """所有可启动循环的账号：.env 引导账号 + 活跃普通用户绑定的游戏账号。"""
+    targets: list[tuple[str, str, dict]] = []
+    seen: set[str] = set()
+    env_email, env_password = _current_env_credentials()
+    if env_email and env_password:
+        seen.add(normalize_account(env_email))
+        targets.append(
+            (env_email, env_password, _load_settings_for_email(env_email)))
+    try:
+        for user in panel_store.list_users():
+            if user.get("is_admin") or user.get("status") != "active":
+                continue
+            account = panel_store.get_account(user["id"])
+            email = (account or {}).get("am4_email", "")
+            password = (account or {}).get("am4_password", "")
+            norm = normalize_account(email)
+            if not email or not password or norm in seen:
+                continue
+            seen.add(norm)
+            targets.append(
+                (email, password, (account or {}).get("settings") or {}))
+    except Exception:
+        pass
+    return targets
+
+
+@app.route("/api/admin/loops/start", methods=["POST"])
+def api_admin_start_all_loops():
+    """管理员统一启动：为所有有凭据的账号启动采集循环。"""
+    _require_csrf()
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    started, errors = [], []
+    for email, password, settings in _all_loop_targets():
+        ok, msg = _start_loop(email, password, settings, "loop")
+        if ok:
+            started.append(email)
+        else:
+            errors.append(f"{email}: {msg}")
+    return jsonify({"ok": True, "started": started, "errors": errors,
+                    "msg": (f"已启动 {len(started)} 个循环"
+                            if started else "没有可启动的账号")})
+
+
+@app.route("/api/admin/loops/stop", methods=["POST"])
+def api_admin_stop_all_loops():
+    """管理员统一停止：停止所有正在运行的采集循环。"""
+    _require_csrf()
+    if not _is_admin_request():
+        return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    stopped = []
+    with _run_lock:
+        for run in list(_runs.values()):
+            if not run.get("running"):
+                continue
+            email = run.get("account_email", "")
+            run["stop_requested"] = True
+            proc = run.get("proc")
+            if proc and proc.poll() is None:
+                proc.terminate()
+            msg = "⏹ 管理员统一停止循环\n"
+            _append_log(msg, paths=run.get("paths"))
+            _broadcast_sse({"type": "log", "line": msg, "account": email})
+            stopped.append(email)
+    return jsonify({"ok": True, "stopped": stopped,
+                    "msg": (f"已停止 {len(stopped)} 个循环"
+                            if stopped else "当前没有正在运行的循环")})
 
 
 def _runner(run: dict) -> None:

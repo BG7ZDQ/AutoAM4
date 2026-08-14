@@ -1255,6 +1255,60 @@ class ServerSchedulingTests(unittest.TestCase):
                           return_value=("", "")):
             self.assertEqual(server._resume_loop_targets(), [])
 
+    def test_setup_endpoint_rate_limited(self):
+        with patch.object(server, "_setup_blocked", return_value=True), \
+             server.app.test_client() as client:
+            resp = client.post(
+                "/api/setup", json={},
+                headers={"X-CSRF-Token": server._csrf_token})
+        self.assertEqual(resp.status_code, 429)
+
+    def test_admin_loops_endpoints_require_admin(self):
+        with patch.object(server, "_is_admin_request", return_value=False), \
+             server.app.test_client() as client:
+            for path in ("/api/admin/loops/start", "/api/admin/loops/stop"):
+                resp = client.post(
+                    path, headers={"X-CSRF-Token": server._csrf_token})
+                self.assertEqual(resp.status_code, 403)
+
+    def test_admin_start_all_loops(self):
+        with patch.object(server, "_is_admin_request", return_value=True), \
+             patch.object(server, "_all_loop_targets",
+                          return_value=[("a@example.com", "pw", {})]), \
+             patch.object(server, "_start_loop",
+                          return_value=(True, "ok")) as start, \
+             server.app.test_client() as client:
+            resp = client.post(
+                "/api/admin/loops/start",
+                headers={"X-CSRF-Token": server._csrf_token})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["started"], ["a@example.com"])
+        start.assert_called_once_with("a@example.com", "pw", {}, "loop")
+
+    def test_admin_stop_all_loops(self):
+        key = server.account_key("a@example.com")
+        proc = Mock()
+        proc.poll.return_value = None
+        server._runs[key] = {
+            "account_email": "a@example.com", "running": True, "proc": proc,
+            "mode": "loop",
+            "paths": {"log": Path(tempfile.mkdtemp()) / "run_log.txt"},
+        }
+        try:
+            with patch.object(server, "_is_admin_request", return_value=True), \
+                 patch.object(server, "_append_log"), \
+                 patch.object(server, "_broadcast_sse"), \
+                 server.app.test_client() as client:
+                resp = client.post(
+                    "/api/admin/loops/stop",
+                    headers={"X-CSRF-Token": server._csrf_token})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.get_json()["stopped"], ["a@example.com"])
+            self.assertTrue(server._runs[key]["stop_requested"])
+            proc.terminate.assert_called_once()
+        finally:
+            server._runs.pop(key, None)
+
     def test_admin_targets_reject_admin_accounts(self):
         other_admin = panel_store.create_user(
             "othadmin", "other-pass-1", is_admin=True, status="active")

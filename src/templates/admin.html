@@ -46,6 +46,8 @@ button{border:0;border-radius:8px;padding:7px 12px;font-size:.85rem;cursor:point
 <div class="top">
   <h1>🛠 管理员面板</h1>
   <span class="sp"></span>
+  <button class="btn-ok" onclick="startAll()">▶ 启动全部</button>
+  <button class="btn-err" onclick="stopAll()">⏹ 停止全部</button>
   <button class="btn-ghost" onclick="openPwdModal()">重置密码</button>
   <button class="btn-ghost" onclick="logout()">退出</button>
 </div>
@@ -166,6 +168,20 @@ function loadRuns(){
 function toggleOps(btn){
   var card=btn.closest('.user-card'), ops=card?card.querySelector('.u-ops'):null;
   if(ops)ops.classList.toggle('open');
+}
+function startAll(){
+  api('/api/admin/loops/start',{method:'POST'}).then(d=>{
+    alert(d.msg||'已提交');
+    if(d.errors&&d.errors.length)alert('部分账号未能启动：\n'+d.errors.join('\n'));
+    loadRuns();
+  });
+}
+function stopAll(){
+  if(!confirm('确定停止所有账号的采集循环？'))return;
+  api('/api/admin/loops/stop',{method:'POST'}).then(d=>{
+    alert(d.msg||'已提交');
+    loadRuns();
+  });
 }
 function enter(id){
   api('/api/admin/impersonate',{method:'POST',headers:{'Content-Type':'application/json'},
