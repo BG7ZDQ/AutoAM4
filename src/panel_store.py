@@ -87,6 +87,21 @@ def init_db() -> None:
     with _lock, _conn() as conn:
         conn.executescript(_SCHEMA)
         conn.execute("PRAGMA user_version = 1")
+    _harden_perms()
+
+
+def _harden_perms() -> None:
+    """Linux 上收紧数据库目录/文件权限：账号库含 AM4 明文密码。"""
+    if os.name == "nt":
+        return
+    try:
+        DB_PATH.parent.chmod(0o700)
+    except Exception:
+        pass
+    try:
+        DB_PATH.chmod(0o600)
+    except Exception:
+        pass
 
 
 def _row_to_user(row: sqlite3.Row | None) -> dict | None:

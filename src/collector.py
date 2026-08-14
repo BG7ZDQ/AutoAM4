@@ -111,7 +111,9 @@ OUT = account_output_dir(OUTPUTS_ROOT, EMAIL, migrate_legacy=False)
 
 # 并发多账号：登录会话 Cookie 按账号隔离，互不覆盖
 _cookie_key = account_key(EMAIL)
-COOKIE_JAR = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp"))) / f"am4_cookiejar_{_cookie_key}.txt"
+# 跨平台临时目录：Linux 下 TEMP 常未设置，不能用 Windows 路径兜底
+_TMP_ROOT = Path(tempfile.gettempdir())
+COOKIE_JAR = _TMP_ROOT / f"am4_cookiejar_{_cookie_key}.txt"
 # 记录当前 cookie 会话归属的 .env 账号，用于检测账号配置变更
 ACCOUNT_MARKER = COOKIE_JAR.with_name(f"am4_cookiejar_{_cookie_key}_account.txt")
 

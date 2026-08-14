@@ -50,6 +50,8 @@ def _load_env():
 _load_env()
 
 BJT = timezone(timedelta(hours=8), name="Asia/Shanghai")  # 北京时间（UTC+8，无夏令时）
+# 跨平台临时目录：Linux 下 TEMP 常未设置，不能用 Windows 路径兜底
+_TMP_ROOT = Path(tempfile.gettempdir())
 _TAKEOFF_READY_BUFFER_SECONDS = 120
 
 
@@ -158,10 +160,21 @@ _migrate_legacy_outputs()
 _CSRF_TOKEN_FILE = ROOT / "src" / ".csrf_token"
 
 
+def _chmod_private(path: Path) -> None:
+    """Linux 上收紧密钥文件权限，避免同机其他用户读取。"""
+    if os.name == "nt":
+        return
+    try:
+        path.chmod(0o600)
+    except Exception:
+        pass
+
+
 def _load_csrf_token() -> str:
     try:
         tok = _CSRF_TOKEN_FILE.read_text(encoding="utf-8").strip()
         if tok:
+            _chmod_private(_CSRF_TOKEN_FILE)
             return tok
     except Exception:
         pass
@@ -169,6 +182,7 @@ def _load_csrf_token() -> str:
     try:
         _CSRF_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
         _CSRF_TOKEN_FILE.write_text(tok, encoding="utf-8")
+        _chmod_private(_CSRF_TOKEN_FILE)
     except Exception:
         pass
     return tok
@@ -182,6 +196,7 @@ def _load_or_create_secret(path: Path, bits: int = 32) -> str:
     try:
         tok = path.read_text(encoding="utf-8").strip()
         if tok:
+            _chmod_private(path)
             return tok
     except Exception:
         pass
@@ -189,6 +204,7 @@ def _load_or_create_secret(path: Path, bits: int = 32) -> str:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(tok, encoding="utf-8")
+        _chmod_private(path)
     except Exception:
         pass
     return tok
@@ -248,6 +264,8 @@ _login_attempts: dict[str, list[float]] = {}
 _login_lock = threading.Lock()
 _LOGIN_MAX_ATTEMPTS = 5
 _LOGIN_LOCK_SECONDS = 15 * 60
+_REGISTER_LIMIT_IP_PER_HOUR = 10
+_register_attempts: dict[str, list[float]] = {}
 
 
 def _login_blocked(username: str) -> bool:
@@ -256,6 +274,13 @@ def _login_blocked(username: str) -> bool:
         now = time.time()
         attempts = [t for t in attempts if now - t < _LOGIN_LOCK_SECONDS]
         _login_attempts[username] = attempts
+        if len(_login_attempts) > 5000:
+            # 防止用户名枚举导致内存无限增长：只保留仍有近期记录的条目
+            cutoff = now - _LOGIN_LOCK_SECONDS
+            _login_attempts = {
+                k: [t for t in v if t >= cutoff]
+                for k, v in _login_attempts.items() if v
+            }
         return len(attempts) >= _LOGIN_MAX_ATTEMPTS
 
 
@@ -267,6 +292,18 @@ def _record_login_failure(username: str) -> None:
 def _clear_login_failures(username: str) -> None:
     with _login_lock:
         _login_attempts.pop(username, None)
+
+
+def _register_blocked(ip: str) -> bool:
+    """注册按来源 IP 限速，防批量注册塞满待审核队列。"""
+    now = time.time()
+    with _login_lock:
+        lst = [t for t in _register_attempts.get(ip, []) if now - t < 3600]
+        _register_attempts[ip] = lst
+        if len(lst) >= _REGISTER_LIMIT_IP_PER_HOUR:
+            return True
+        lst.append(now)
+        return False
 
 
 def _real_user() -> dict | None:
@@ -334,6 +371,17 @@ def _is_admin_request() -> bool:
 
 _PUBLIC_PAGES = {"/login", "/register", "/setup"}
 _PUBLIC_API = {"/api/login", "/api/register", "/api/setup", "/api/session", "/healthz"}
+
+
+@app.after_request
+def _security_headers(resp):
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    if app.config.get("SESSION_COOKIE_SECURE"):
+        resp.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return resp
 
 
 @app.before_request
@@ -480,6 +528,8 @@ def api_login():
 
 @app.route("/api/register", methods=["POST"])
 def api_register():
+    if _register_blocked(request.remote_addr or "unknown"):
+        return jsonify({"ok": False, "msg": "注册过于频繁，请稍后再试"}), 429
     data = request.get_json(silent=True) or {}
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
@@ -612,7 +662,7 @@ def _get_route_planner(require_login: bool = False):
         import route_planner as rp
         _route_planner = rp
     if require_login:
-        tmp_dir = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp")))
+        tmp_dir = _TMP_ROOT
         # 在线操作使用当前登录（或被模拟）账号的凭据
         acct = _session_account()
         email, password = acct.get("email", ""), acct.get("password", "")
@@ -778,7 +828,7 @@ def _refresh_market_rt_worker(email: str = "", password: str = "",
             return
         import collector as ext
         # 服务端会话：按账号隔离，与采集子进程分离，与航线/待办通过在线会话锁串行。
-        tmp_dir = Path(os.environ.get("TEMP", str(Path.home() / "AppData" / "Local" / "Temp")))
+        tmp_dir = _TMP_ROOT
         key = account_key(env_email)
         ext.COOKIE_JAR = tmp_dir / f"am4_cookiejar_{key}_worker.txt"
         ext.ACCOUNT_MARKER = ext.COOKIE_JAR.with_name(f"am4_cookiejar_{key}_account.txt")

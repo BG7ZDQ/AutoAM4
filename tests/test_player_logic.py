@@ -1822,6 +1822,23 @@ class ServerSchedulingTests(unittest.TestCase):
             server._bootstrap_admin_from_env()
         create.assert_not_called()
 
+    def test_register_rate_limited_per_ip(self):
+        server._register_attempts.clear()
+        try:
+            for _ in range(10):
+                self.assertFalse(server._register_blocked("1.2.3.4"))
+            self.assertTrue(server._register_blocked("1.2.3.4"))
+            self.assertFalse(server._register_blocked("5.6.7.8"))
+        finally:
+            server._register_attempts.clear()
+
+    def test_security_headers_present(self):
+        with server.app.test_client() as client:
+            resp = client.get("/login")
+        self.assertEqual(resp.headers.get("X-Content-Type-Options"), "nosniff")
+        self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
+        self.assertEqual(resp.headers.get("Referrer-Policy"), "same-origin")
+
     def test_unknown_balance_rejects_new_purchase_after_readonly_lookup(self):
         planner = Mock()
         planner.DEFAULT_COST_INDEX = 200
