@@ -1088,10 +1088,12 @@ def _ensure_marketing_tasks() -> None:
     if not _current_operation_settings().get("auto_marketing", True):
         return
     now = time.time()
+    owner = _task_owner_key()
     with _pending_lock:
+        queue = _tasks_by_account.get(owner, [])
         existing = {
             str((task.get("params") or {}).get("campaign", ""))
-            for task in _pending_tasks
+            for task in queue
             if task.get("kind") == "marketing" and task.get("status") in {"pending", "running"}
         }
     if "airline" not in existing:
@@ -1144,8 +1146,10 @@ def _cancel_removed_aircraft_tasks(removed: list[dict]) -> int:
     if not regs and not fids:
         return 0
     cancelled: list[tuple[str, str]] = []
+    owner = _task_owner_key()
     with _pending_lock:
-        for task in _pending_tasks:
+        queue = _tasks_by_account.get(owner, [])
+        for task in queue:
             if (task.get("kind") not in _AIRCRAFT_OWNED_TASK_KINDS
                     or task.get("status") not in {"pending", "running", "failed"}):
                 continue
@@ -1160,7 +1164,7 @@ def _cancel_removed_aircraft_tasks(removed: list[dict]) -> int:
             canonical_reg = fid_to_reg.get(fid) or reg
             cancelled.append((canonical_reg, str(task.get("kind", ""))))
         if cancelled:
-            _save_pending_tasks()
+            _save_pending_tasks(owner=owner)
     # 已建线飞机售出后不应再由 builds.csv 合并回机队页面，也不应继续
     # 占用候选航线排除集合。
     for reg in regs:
@@ -1391,16 +1395,18 @@ def _create_retrofit_task(reg: str, route_id: str, cost_index: int,
                           economy: str, business: str, first: str,
                           cargo_l: str = "", cargo_h: str = "") -> None:
     """已交付飞机建线后：直接创建改装任务（建线已完成）。"""
+    owner = _task_owner_key()
     with _pending_lock:
+        queue = _tasks_by_account.get(owner, [])
         changed = False
-        for old in _pending_tasks:
+        for old in queue:
             if (old.get("kind") == "retrofit"
                     and str((old.get("params") or {}).get("reg", "")).upper() == str(reg).upper()
                     and old.get("status") == "failed"):
                 old["status"] = "superseded"
                 changed = True
         if changed:
-            _save_pending_tasks()
+            _save_pending_tasks(owner=owner)
     _add_retrofit_task(reg, route_id, cost_index, time.time() + 15,
                        f"{reg} 将在航线建设后进行改装（航线 {route_id}）",
                        fid=fid, hub_id=hub_id, retrofit=retrofit,
@@ -1413,8 +1419,10 @@ def _arm_retrofit(reg: str, route_id: str, cost_index: int,
                   economy: str = "", business: str = "0", first: str = "0",
                   cargo_l: str = "", cargo_h: str = "") -> None:
     """建线完成：给预排的改装任务填充航线 ID，并把触发时间校准到 15~60 秒后。"""
+    owner = _task_owner_key()
     with _pending_lock:
-        for t in _pending_tasks:
+        queue = _tasks_by_account.get(owner, [])
+        for t in queue:
             if (t.get("kind") == "retrofit" and t.get("status") == "pending"
                     and not t.get("params", {}).get("route_id")
                     and t.get("params", {}).get("reg") == reg):
@@ -1426,7 +1434,7 @@ def _arm_retrofit(reg: str, route_id: str, cost_index: int,
                     t["params"]["hub_id"] = str(hub_id)
                 t["title"] = f"{reg} 将在航线建设后进行改装（航线 {route_id}）"
                 t["trigger_at"] = time.time() + 15 + random.uniform(0, 45)
-                _save_pending_tasks()
+                _save_pending_tasks(owner=owner)
                 return
     # 没有预排任务（例如直接对已交付飞机建设）则现建一条
     _create_retrofit_task(reg, route_id, cost_index, fid, hub_id, retrofit,
@@ -1435,14 +1443,16 @@ def _arm_retrofit(reg: str, route_id: str, cost_index: int,
 
 def _fail_takeoff(reg: str, reason: str) -> None:
     """建线失败：取消该飞机的预排起飞任务。"""
+    owner = _task_owner_key()
     with _pending_lock:
-        for t in _pending_tasks:
+        queue = _tasks_by_account.get(owner, [])
+        for t in queue:
             if (t.get("kind") == "takeoff" and t.get("status") == "pending"
                     and not t.get("params", {}).get("route_id")
                     and t.get("params", {}).get("reg") == reg):
                 t["status"] = "failed"
                 t["error"] = reason
-                _save_pending_tasks()
+                _save_pending_tasks(owner=owner)
                 return
 
 
@@ -1473,8 +1483,10 @@ def _retrofit_blocks_takeoff(reg: str) -> str | None:
     """要求的改装未成功时，阻止全量扫描绕过建设前置条件。"""
     target = str(reg or "").strip().upper()
     reconciled = False
+    owner = _task_owner_key()
     with _pending_lock:
-        for task in _pending_tasks:
+        queue = _tasks_by_account.get(owner, [])
+        for task in queue:
             params = task.get("params") or {}
             if (task.get("kind") == "retrofit"
                     and str(params.get("reg", "")).strip().upper() == target
@@ -1496,7 +1508,7 @@ def _retrofit_blocks_takeoff(reg: str) -> str | None:
             reconciled = True
     if reconciled:
         with _pending_lock:
-            _save_pending_tasks()
+            _save_pending_tasks(owner=owner)
         _publish_log(f"🔧 {reg} 所需改装已完成，解除起飞阻断")
     return None
 
@@ -3653,12 +3665,15 @@ def _pending_display_title(task: dict) -> str:
 def api_pending_cancel(tid: str):
     """取消一条尚未执行的待定任务。"""
     _require_csrf()
+    acct = _session_account()
+    key = account_key(acct.get("email") or "")
     with _pending_lock:
-        for owner_key, queue in list(_tasks_by_account.items()):
+        queue = _tasks_by_account.get(key)
+        if queue:
             for t in queue:
                 if t["id"] == tid and t.get("status") == "pending":
                     t["status"] = "cancelled"
-                    _save_pending_tasks(owner=owner_key)
+                    _save_pending_tasks(owner=key)
                     if t.get("kind") == "delivery_continue":
                         _mark_build(t.get("params", {}).get("reg", ""), status="cancelled")
                     return jsonify({"ok": True, "msg": "已取消"})
@@ -4265,8 +4280,6 @@ def _runner(run: dict) -> None:
     except Exception as e:
         run["error"] = str(e)
     finally:
-        _task_account_ctx.paths = None
-        _task_account_ctx.account = None
         with _run_lock:
             run["mode"] = ""
             run["last_run"] = _now_bjt().strftime("%Y-%m-%d %H:%M:%S")
@@ -4283,8 +4296,11 @@ def _runner(run: dict) -> None:
                 "account": email,
             })
             run["running"] = False
-        _persist_active_loops()
-        _ensure_marketing_tasks()
+            _persist_active_loops()
+            # 营销任务必须归属本账号：在清空线程账号上下文之前补齐
+            _ensure_marketing_tasks()
+            _task_account_ctx.paths = None
+            _task_account_ctx.account = None
 
 
 @app.route("/api/stop", methods=["POST"])

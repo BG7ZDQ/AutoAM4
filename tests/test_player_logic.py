@@ -1408,7 +1408,7 @@ class ServerSchedulingTests(unittest.TestCase):
             "已售出或移除" in task["error"]
             for task in server._pending_tasks[:3]
         ))
-        save.assert_called_once_with()
+        save.assert_called_once()
         mark_build.assert_called_once_with("SOLD-1", status="sold")
         self.assertIn("已取消 3 项", publish.call_args.args[0])
 
