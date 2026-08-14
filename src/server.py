@@ -4922,18 +4922,17 @@ def api_stop():
     key = account_key(target_email)
     with _run_lock:
         run = _runs.get(key)
-        if not run or not run.get("running"):
-            return jsonify({"ok": False, "msg": "该账号没有正在运行的循环"}), 404
-        proc = run.get("proc")
-        if proc and proc.poll() is None:
-            run["stop_requested"] = True
-            proc.terminate()
-            msg = "⏹ 用户手动停止\n"
-            _append_log(msg, paths=run.get("paths"))
-            _broadcast_sse({"type": "log", "line": msg, "account": target_email})
-        # 立即反映停止状态，避免前端在 _runner 收尾前仍看到“运行中”
-        run["running"] = False
-        run["mode"] = ""
+        if run and run.get("running"):
+            proc = run.get("proc")
+            if proc and proc.poll() is None:
+                run["stop_requested"] = True
+                proc.terminate()
+                msg = "⏹ 用户手动停止\n"
+                _append_log(msg, paths=run.get("paths"))
+                _broadcast_sse({"type": "log", "line": msg, "account": target_email})
+            # 立即反映停止状态，避免前端在 _runner 收尾前仍看到“运行中”
+            run["running"] = False
+            run["mode"] = ""
     with _stopped_lock:
         _stopped_accounts.add(normalize_account(target_email))
     _persist_stopped_accounts()
