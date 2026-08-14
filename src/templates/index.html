@@ -34,8 +34,7 @@ html{font-size:16px}body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"
 .market-bar .mk-info{color:var(--t2);font-size:.8rem}
 .market-bar .mk-info b{color:var(--t)}
 .market-bar .mk-div{color:var(--t3);opacity:.4;padding:0 4px}
-.mk-fold{display:none;font-size:.8rem;color:var(--t3)}
-@media(max-width:768px){.market-bar{flex-wrap:wrap;gap:6px 12px;cursor:pointer}.market-bar .mk-item{flex:1 1 100%}.mk-fold{display:inline-flex;justify-content:center;padding:2px 0}.market-bar.collapsed .mk-hide{display:none}}
+@media(max-width:768px){.market-bar{flex-wrap:wrap;gap:6px 12px;cursor:pointer}.market-bar .mk-item{flex:1 1 100%}.market-bar.collapsed .mk-hide{display:none}}
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
 .stat-card{background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:16px;box-shadow:var(--sh)}
 .stat-card .label{font-size:.8rem;color:var(--t2);margin-bottom:4px}.stat-card .value{font-size:1.8rem;font-weight:700}.stat-card .sub{font-size:.75rem;color:var(--t3);margin-top:2px}
@@ -142,7 +141,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
   <span>👑 你是管理员：可在 <a href="/admin" style="color:var(--ac)">管理面板</a> 进入任意账号，或在「设置」绑定自己的业务账号</span>
 </div>
 <div class="progress-wrap" id="pw"><div class="progress-info"><span id="pl">采集进度</span><span id="pp">0/0</span></div><div class="progress-bar-bg"><div class="progress-bar-fg" id="pb"></div></div></div>
-<div class="market-bar" id="marketBar"><span class="mk-item mk-hide"><span class="mk-label">👤 账号</span> <span class="mk-val" id="acctTag">--</span></span><span class="mk-item"><span class="mk-label">⛽ 燃油价格</span> <span class="mk-val">$<span id="mkFuel">--</span></span></span><span class="mk-item mk-hide"><span class="mk-label">🌿 CO₂价格</span> <span class="mk-val">$<span id="mkCo2">--</span></span></span><span class="mk-item"><span class="mk-label">已有燃油</span> <span class="mk-val2" id="mkFuelQty">--</span> Lbs</span><span class="mk-item mk-hide"><span class="mk-label">CO₂配额</span> <span class="mk-val2" id="mkCo2Qty">--</span></span><span class="mk-item mk-hide"><span class="mk-label">更新时间</span> <span id="mkTime">--</span><span class="mk-spin" id="mkSpin" style="display:none"></span></span><span class="mk-item mk-fold" id="mkFold">▾</span></div>
+<div class="market-bar" id="marketBar"><span class="mk-item mk-hide"><span class="mk-label">👤 账号</span> <span class="mk-val" id="acctTag">--</span></span><span class="mk-item"><span class="mk-label">⛽ 燃油价格</span> <span class="mk-val">$<span id="mkFuel">--</span></span> <span class="mk-label">🌿 CO₂价格</span> <span class="mk-val">$<span id="mkCo2">--</span></span></span><span class="mk-item"><span class="mk-label">已有燃油</span> <span class="mk-val2" id="mkFuelQty">--</span> Lbs <span class="mk-label">CO₂配额</span> <span class="mk-val2" id="mkCo2Qty">--</span></span><span class="mk-item mk-hide"><span class="mk-label">更新时间</span> <span id="mkTime">--</span><span class="mk-spin" id="mkSpin" style="display:none"></span></span></div>
 <div id="loopCards" style="display:none;margin-bottom:12px"></div>
 <div class="stats-grid">
 <div class="stat-card accent"><div class="label">机队总数</div><div class="value" id="sf">--</div><div class="sub">架飞机</div></div>
@@ -725,8 +724,6 @@ function marketToggle(){
   var mb=document.getElementById('marketBar');
   if(!mb)return;
   mb.classList.toggle('collapsed');
-  var f=document.getElementById('mkFold');
-  if(f)f.textContent=mb.classList.contains('collapsed')?'▸':'▾';
 }
 document.addEventListener('DOMContentLoaded',function(){
   if(isMobile()){
@@ -735,8 +732,6 @@ document.addEventListener('DOMContentLoaded',function(){
       mb.addEventListener('click',marketToggle);
       mbTimer=setTimeout(function(){
         mb.classList.add('collapsed');
-        var f=document.getElementById('mkFold');
-        if(f)f.textContent='▸';
       },3000);
     }
   }
