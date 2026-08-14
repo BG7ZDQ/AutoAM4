@@ -217,7 +217,7 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertIn(".console .warn{color:var(--wr)}", template)
         self.assertIn("mobile=matchMedia('(max-width:768px)').matches", template)
         self.assertIn("document.getElementById('sb').textContent=mobile?compact(m.balance):m.balance", template)
-        self.assertIn("function renderRuns(runs)", template)
+        self.assertNotIn("loopCards", template)
         self.assertIn("function ownEvent(d)", template)
         self.assertIn("{{ '运行中' if initial_running else '空闲' }}", template)
         self.assertIn("function chips(c)", template)

@@ -1830,12 +1830,39 @@ def _load_last_full_date() -> str:
 
 
 def _save_last_full_date(day: str) -> None:
+    state = _load_schedule_state()
+    state["last_full_date"] = day
+    state["last_full_ts"] = time.time()
+    _save_schedule_state(state)
+
+
+def _load_schedule_state() -> dict:
+    try:
+        state = json.loads(SCHEDULE_STATE_JSON.read_text(encoding="utf-8"))
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _load_last_full_ts() -> float:
+    try:
+        return float(_load_schedule_state().get("last_full_ts", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _save_schedule_state(state: dict) -> None:
     tmp = SCHEDULE_STATE_JSON.with_suffix(".json.tmp")
     tmp.write_text(
-        json.dumps({"last_full_date": day}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+        json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, SCHEDULE_STATE_JSON)
+
+
+def _mark_full_completed() -> None:
+    """记录最近一次全量完成时间（不改动 last_full_date），供重启去重。"""
+    state = _load_schedule_state()
+    state["last_full_ts"] = time.time()
+    _save_schedule_state(state)
 
 
 def main():
@@ -1864,13 +1891,15 @@ def main():
         if use_fixed_interval:
             print(f"当前使用固定间隔：{args.interval} 秒/轮", flush=True)
         startup_now = _now_bjt()
+        last_full_date = _load_last_full_date()
         completed_today = (
             startup_now.hour >= DAILY_FULL_HOUR_BJT
-            and _load_last_full_date() == startup_now.date().isoformat()
+            and last_full_date == startup_now.date().isoformat()
         )
+        recent_full = (time.time() - _load_last_full_ts()) < 6 * 3600
         _last_full_date = startup_now.date() if completed_today else None
-        _first_iteration = not completed_today
-        if completed_today:
+        _first_iteration = not (completed_today or recent_full)
+        if completed_today or recent_full:
             print("本次重启以轻量模式启动", flush=True)
             nxt = _next_cycle_ts(startup_now)
             wait = max(5, (nxt - _now_bjt()).total_seconds())
@@ -1893,6 +1922,8 @@ def main():
                                        if now_bjt.hour >= DAILY_FULL_HOUR_BJT else None)
                     if _last_full_date is not None:
                         _save_last_full_date(_last_full_date.isoformat())
+                    else:
+                        _mark_full_completed()
                 elif (now_bjt.hour == DAILY_FULL_HOUR_BJT
                       and _last_full_date != now_bjt.date()):
                     # 06:00 全面刷新，并为需求旺盛飞机登记待办
