@@ -26,7 +26,10 @@ button:hover{filter:brightness(1.05)}
 <body>
 <div class="card">
   <h1>创建管理员</h1>
+  {% if setup_enabled %}
   <p class="sub">首次使用：创建管理员账户（纯管理，不绑定游戏账号）。下方可选把现有 .env 中的游戏账号接入为普通用户。</p>
+  <label>初始化令牌（.env 中的 AM4_SETUP_TOKEN）</label>
+  <input id="tk" type="password" autocomplete="one-time-code">
   <label>管理员用户名</label>
   <input id="u" autocomplete="username" autofocus>
   <label>管理员密码（≥6 字符）</label>
@@ -38,15 +41,20 @@ button:hover{filter:brightness(1.05)}
   <input id="bp" type="password" autocomplete="new-password">
   <div class="msg" id="msg"></div>
   <button onclick="setup()">创建并登录</button>
+  {% else %}
+  <p class="sub">服务器未配置 <code>AM4_SETUP_TOKEN</code>，网页初始化已禁用。请在项目根目录的 <code>.env</code> 中设置该令牌并重启服务，或改用 <code>AM4_ADMIN_USERNAME</code> / <code>AM4_ADMIN_PASSWORD</code> 预置管理员。</p>
+  {% endif %}
 </div>
 <script>
 const CSRF = "{{ csrf_token }}";
+{% if setup_enabled %}
 function setup(){
+  const tk=document.getElementById('tk').value.trim();
   const u=document.getElementById('u').value.trim(), p=document.getElementById('p').value;
   const bu=document.getElementById('bu').value.trim(), bp=document.getElementById('bp').value;
   const msg=document.getElementById('msg'); msg.className='msg'; msg.textContent='';
   fetch('/api/setup',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':CSRF},
-    body:JSON.stringify({username:u,password:p,bootstrap_username:bu,bootstrap_password:bp})})
+    body:JSON.stringify({setup_token:tk,username:u,password:p,bootstrap_username:bu,bootstrap_password:bp})})
     .then(r=>r.json().then(d=>({ok:r.ok,d})))
     .then(({ok,d})=>{
       if(ok){ msg.className='msg ok'; msg.textContent='创建成功，正在登录…';
@@ -57,6 +65,7 @@ function setup(){
     })
     .catch(()=>{ msg.className='msg err'; msg.textContent='网络错误，请重试'; });
 }
+{% endif %}
 </script>
 </body>
 </html>

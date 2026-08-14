@@ -122,7 +122,24 @@ PROTECTED_ACCOUNTS = {
 
 
 def _account_protected(email: str) -> bool:
-    return bool(email and normalize_account(email) in PROTECTED_ACCOUNTS)
+    """账号是否禁止自动化：显式保护名单 + 与管理员面板「停用」联动。
+
+    绑定该游戏邮箱的网站账户被停用（或非 active）时，同样视为受保护，
+    保证“停用”能真正停下正在运行/待执行的自动化，而不是只挡登录。
+    """
+    if not email:
+        return False
+    norm = normalize_account(email)
+    if norm in PROTECTED_ACCOUNTS:
+        return True
+    try:
+        for user in panel_store.list_users():
+            if normalize_account(user.get("am4_email") or "") == norm:
+                if user.get("status") != "active":
+                    return True
+    except Exception:
+        pass
+    return False
 
 
 def _active_credentials() -> tuple[str, str]:
@@ -230,6 +247,9 @@ _session_secret = _load_or_create_secret(_SESSION_SECRET_FILE)
 _SERVICE_TOKEN_FILE = ROOT / "src" / ".service_token"
 _service_token = _load_or_create_secret(_SERVICE_TOKEN_FILE)
 
+# 网页初始化令牌：首次创建管理员必须提供（防止服务在初始化前暴露到公网时被抢先接管）。
+_SETUP_TOKEN = os.environ.get("AM4_SETUP_TOKEN", "").strip()
+
 
 def _require_csrf():
     """POST 写操作保护：要求携带与页面令牌匹配的 X-CSRF-Token 头。
@@ -238,9 +258,13 @@ def _require_csrf():
     而跨源 fetch 携带自定义头会触发 CORS 预检并被拒 —— 双保险。
     """
     token = request.headers.get("X-CSRF-Token", "")
-    valid = token == _csrf_token or token == _session_csrf() or \
+    # 磁盘全局令牌只对回环请求生效：兼容本机脚本与测试；远端即使拿到该令牌
+    # 也无法用于跨站写操作（远程浏览器发来的请求 remote_addr 不是回环）。
+    loopback = request.remote_addr in {"127.0.0.1", "::1"}
+    valid = token == _session_csrf() or \
         token == _service_token or \
-        request.headers.get("X-Service-Token", "") == _service_token
+        request.headers.get("X-Service-Token", "") == _service_token or \
+        (loopback and token == _csrf_token)
     if not valid:
         # 抛出携带 JSON 响应体的 403，避免返回 HTML 错误页（前端解析失败），
         # 同时确保调用方不 return 也会生效
@@ -256,11 +280,17 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     # 部署在 HTTPS 后置 AM4_COOKIE_SECURE=1；本地 http 调试保持 0
     SESSION_COOKIE_SECURE=os.environ.get("AM4_COOKIE_SECURE", "0") == "1",
-    # 模板改动即时生效，无需重启（开发期）
-    TEMPLATES_AUTO_RELOAD=True,
+    # 生产默认关闭模板自动重载；调试期可设 AM4_DEBUG_TEMPLATES=1 打开
+    TEMPLATES_AUTO_RELOAD=os.environ.get("AM4_DEBUG_TEMPLATES", "0") == "1",
 )
 
 import panel_store
+
+if os.environ.get("AM4_TRUST_PROXY", "0") == "1":
+    # 部署在 nginx 等可信反代后时，用 X-Forwarded-For/Proto 还原真实客户端地址，
+    # 让登录/注册限流按真实来源计数。仅当上游只有一个可信代理时启用。
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
 
 # ===== 面板登录 / 多账号 / 管理员 =====
@@ -277,6 +307,7 @@ _login_lock = threading.Lock()
 _LOGIN_MAX_ATTEMPTS = 5
 _LOGIN_LOCK_SECONDS = 15 * 60
 _REGISTER_LIMIT_IP_PER_HOUR = 10
+_REGISTER_LIMIT_USER_PER_HOUR = 3
 _register_attempts: dict[str, list[float]] = {}
 
 
@@ -308,16 +339,37 @@ def _clear_login_failures(username: str) -> None:
         _login_attempts.pop(username, None)
 
 
-def _register_blocked(ip: str) -> bool:
-    """注册按来源 IP 限速，防批量注册塞满待审核队列。"""
+def _register_blocked(ip: str, username: str = "") -> bool:
+    """注册限流：按来源 IP 与单一用户名两个维度分别计数。
+
+    反代部署需启用 AM4_TRUST_PROXY 才能取到真实 IP；用户名维度保证同一账户名
+    的重复请求只锁它自己，不会拖累其他用户（“锁单一账户”）。
+    """
     now = time.time()
+    ip_key = ip or "unknown"
+    user_key = ("user:" + normalize_account(username)) if username.strip() else None
     with _login_lock:
-        lst = [t for t in _register_attempts.get(ip, []) if now - t < 3600]
-        _register_attempts[ip] = lst
-        if len(lst) >= _REGISTER_LIMIT_IP_PER_HOUR:
-            return True
-        lst.append(now)
-        return False
+        ip_list = [t for t in _register_attempts.get(ip_key, []) if now - t < 3600]
+        _register_attempts[ip_key] = ip_list
+        user_list: list[float] = []
+        if user_key:
+            user_list = [t for t in _register_attempts.get(user_key, [])
+                         if now - t < 3600]
+            _register_attempts[user_key] = user_list
+        blocked = (len(ip_list) >= _REGISTER_LIMIT_IP_PER_HOUR
+                   or (user_key and len(user_list) >= _REGISTER_LIMIT_USER_PER_HOUR))
+        if not blocked:
+            ip_list.append(now)
+            if user_key:
+                user_list.append(now)
+        # 防内存膨胀：只保留仍有近期记录的键
+        if len(_register_attempts) > 5000:
+            cutoff = now - 3600
+            pruned = {k: [t for t in v if t >= cutoff]
+                      for k, v in _register_attempts.items() if v}
+            _register_attempts.clear()
+            _register_attempts.update(pruned)
+        return blocked
 
 
 def _real_user() -> dict | None:
@@ -381,6 +433,25 @@ def _session_paths() -> dict:
 def _is_admin_request() -> bool:
     user = _real_user()
     return bool(user and user.get("is_admin"))
+
+
+def _stop_run_for_email(email: str) -> bool:
+    """停止指定游戏账号正在运行的采集循环（停用/删除用户时联动调用）。"""
+    if not email:
+        return False
+    key = account_key(email)
+    with _run_lock:
+        run = _runs.get(key)
+        if not run or not run.get("running"):
+            return False
+        proc = run.get("proc")
+        run["stop_requested"] = True
+        if proc and proc.poll() is None:
+            proc.terminate()
+        msg = "⏹ 账号已被管理员停用，循环已停止\n"
+        _append_log(msg, paths=run.get("paths"))
+        _broadcast_sse({"type": "log", "line": msg, "account": email})
+    return True
 
 
 _PUBLIC_PAGES = {"/login", "/register", "/setup"}
@@ -447,7 +518,8 @@ def register_page():
 def setup_page():
     if panel_store.admin_exists():
         return redirect(url_for("login_page"))
-    return render_template("setup.html", csrf_token=_session_csrf())
+    return render_template("setup.html", csrf_token=_session_csrf(),
+                           setup_enabled=bool(_SETUP_TOKEN))
 
 
 @app.route("/healthz")
@@ -513,6 +585,7 @@ def api_get_account():
 
 @app.route("/api/login", methods=["POST"])
 def api_login():
+    _require_csrf()
     data = request.get_json(silent=True) or {}
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
@@ -542,10 +615,10 @@ def api_login():
 
 @app.route("/api/register", methods=["POST"])
 def api_register():
-    if _register_blocked(request.remote_addr or "unknown"):
-        return jsonify({"ok": False, "msg": "注册过于频繁，请稍后再试"}), 429
     data = request.get_json(silent=True) or {}
     username = str(data.get("username", "")).strip()
+    if _register_blocked(request.remote_addr or "unknown", username):
+        return jsonify({"ok": False, "msg": "注册过于频繁，请稍后再试"}), 429
     password = str(data.get("password", ""))
     am4_email = str(data.get("am4_email", "")).strip()
     am4_password = str(data.get("am4_password", ""))
@@ -562,9 +635,19 @@ def api_register():
 
 @app.route("/api/setup", methods=["POST"])
 def api_setup():
+    _require_csrf()
     if panel_store.admin_exists():
         return jsonify({"ok": False, "msg": "管理员已存在"}), 403
+    if not _SETUP_TOKEN:
+        return jsonify({
+            "ok": False,
+            "msg": "服务器未配置 AM4_SETUP_TOKEN，网页初始化已禁用；"
+                   "请在 .env 中设置并重启后再试",
+        }), 403
     data = request.get_json(silent=True) or {}
+    provided_token = str(data.get("setup_token") or "")
+    if not provided_token or not secrets.compare_digest(provided_token, _SETUP_TOKEN):
+        return jsonify({"ok": False, "msg": "初始化令牌无效"}), 403
     username = str(data.get("username", "")).strip()
     password = str(data.get("password", ""))
     try:
@@ -588,7 +671,7 @@ def api_setup():
                     bootstrap_user, bootstrap_pass, is_admin=False, status="active",
                     am4_email=env_email, am4_password=env_password,
                 )
-                messages.append(f"已将 {env_email} 接入为普通用户 {bootstrap_user}")
+                messages.append(f"已将 .env 游戏账号接入为普通用户 {bootstrap_user}")
             except ValueError as exc:
                 messages.append(f"接入失败：{exc}")
     return jsonify({"ok": True, "msg": "；".join(messages)})
@@ -615,10 +698,20 @@ def api_admin_user_status(uid: int):
         return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
     data = request.get_json(silent=True) or {}
     status = str(data.get("status", ""))
+    target = panel_store.get_user_by_id(uid)
+    if target is None:
+        return jsonify({"ok": False, "msg": "用户不存在"}), 400
+    if target.get("is_admin"):
+        return jsonify({"ok": False, "msg": "不能修改管理员账号的状态"}), 403
     try:
         panel_store.set_user_status(uid, status)
     except ValueError as exc:
         return jsonify({"ok": False, "msg": str(exc)}), 400
+    if status != "active":
+        # 停用即联动：立即停止该账号正在运行的循环；
+        # 后续自动化由 _account_protected 的停用检查统一拒绝
+        account = panel_store.get_account(uid) or {}
+        _stop_run_for_email(account.get("am4_email", ""))
     return jsonify({"ok": True})
 
 
@@ -629,8 +722,14 @@ def api_admin_user_password(uid: int):
         return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
     data = request.get_json(silent=True) or {}
     password = str(data.get("password", ""))
-    if panel_store.get_user_by_id(uid) is None:
+    target = panel_store.get_user_by_id(uid)
+    if target is None:
         return jsonify({"ok": False, "msg": "用户不存在"}), 400
+    if target.get("is_admin"):
+        return jsonify({
+            "ok": False,
+            "msg": "管理员密码仅可由服务器配置（.env）修改",
+        }), 403
     try:
         panel_store.set_user_password(uid, password)
     except ValueError as exc:
@@ -643,9 +742,17 @@ def api_admin_delete_user(uid: int):
     _require_csrf()
     if not _is_admin_request():
         return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
+    target = panel_store.get_user_by_id(uid)
+    if target is None:
+        return jsonify({"ok": False, "msg": "用户不存在"}), 400
     if uid == _real_user()["id"]:
         return jsonify({"ok": False, "msg": "不能删除自己"}), 400
+    if target.get("is_admin"):
+        return jsonify({"ok": False, "msg": "不能删除管理员账号"}), 403
+    account = panel_store.get_account(uid) or {}
+    email = account.get("am4_email", "")
     panel_store.delete_user(uid)
+    _stop_run_for_email(email)
     return jsonify({"ok": True})
 
 
@@ -655,7 +762,10 @@ def api_admin_impersonate():
     if not _is_admin_request():
         return jsonify({"ok": False, "msg": "需要管理员权限"}), 403
     data = request.get_json(silent=True) or {}
-    target_id = int(data.get("user_id") or 0)
+    try:
+        target_id = int(data.get("user_id") or 0)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "msg": "user_id 必须是整数"}), 400
     target = panel_store.get_user_by_id(target_id)
     if target is None or target.get("status") != "active":
         return jsonify({"ok": False, "msg": "目标账号不存在或未激活"}), 400
@@ -715,9 +825,14 @@ _runs: dict[str, dict] = {}
 MAX_CONCURRENT_LOOPS = max(1, int(os.environ.get("AM4_MAX_CONCURRENT_LOOPS", "3")))
 # 持久化"正在运行的循环账号"，供 systemd 重启后由服务令牌续接
 _ACTIVE_LOOPS_FILE = ROOT / "data" / "active_loops.json"
-_sse_clients: list[queue.Queue] = []
+# SSE 订阅者：(账号键, 队列)。事件按账号路由，同一会话只保留一条连接，
+# 避免跨账号数据互相可见，也避免单个用户占满全部工作线程。
+_sse_clients: list[tuple[str, queue.Queue]] = []
+_sse_session_queues: dict = {}
 _sse_clients_lock = threading.Lock()
-_MAX_SSE_CLIENTS = max(8, int(os.environ.get("AM4_MAX_SSE_CLIENTS", "50")))
+# 上限默认与部署单元 gunicorn --threads 对齐（8），需给普通请求预留线程；
+# 部署时可按实际线程数调整 AM4_MAX_SSE_CLIENTS。
+_MAX_SSE_CLIENTS = max(1, int(os.environ.get("AM4_MAX_SSE_CLIENTS", "8")))
 
 
 def _any_run_running() -> bool:
@@ -3007,9 +3122,15 @@ def _natural_key(s: str):
 
 
 def _broadcast_sse(data: dict):
+    # 携带 account 字段的事件只投递给该账号的订阅者；无 account 字段的
+    # 全局事件（如 pending 刷新）仍广播给所有人，具体数据由 /api/* 按会话读取。
+    acct_raw = str(data.get("account") or "")
+    acct_key = account_key(acct_raw) if acct_raw else None
     dead = []
     with _sse_clients_lock:
-        for q in list(_sse_clients):  # 快照迭代，避免并发连接增删导致 RuntimeError
+        for key, q in list(_sse_clients):  # 快照迭代，避免并发连接增删导致 RuntimeError
+            if acct_key is not None and key != acct_key:
+                continue
             try:
                 q.put_nowait(data)
             except queue.Full:
@@ -3017,8 +3138,7 @@ def _broadcast_sse(data: dict):
             except Exception:
                 dead.append(q)
         for q in dead:
-            if q in _sse_clients:
-                _sse_clients.remove(q)
+            _sse_clients[:] = [item for item in _sse_clients if item[1] is not q]
 
 
 def _publish_log(line: str) -> None:
@@ -3128,6 +3248,10 @@ def api_status():
     acct = _session_account()
     effective = _effective_user()
     runs = _runs_payload()
+    if not _is_admin_request():
+        # 普通用户只能看到自己绑定账号的运行状态，避免暴露其他用户邮箱与状态
+        runs = [r for r in runs if normalize_account(r["account"])
+                == normalize_account(acct.get("email") or "")]
     own = next((r for r in runs if normalize_account(r["account"]) == normalize_account(
         acct.get("email") or loop_email)), None)
     status = {
@@ -3138,7 +3262,7 @@ def api_status():
             "fleet_count": len(fleet),
             "maint_count": len(maint),
             "account": acct.get("email", ""),
-        "loop_account": loop_email,
+        "loop_account": loop_email if _is_admin_request() else "",
         "username": (effective or {}).get("username"),
         "impersonating": bool(session.get("impersonate_uid")),
         "progress_total": (own or {}).get("progress_total", 0),
@@ -3150,11 +3274,23 @@ def api_status():
 
 @app.route("/api/stream")
 def api_stream():
+    acct_key = account_key(_session_account().get("email") or "__unbound__")
+    uid = session.get("uid")
     with _sse_clients_lock:
+        # 同一会话只保留一条连接：新连接替换旧连接并通知其退出，释放工作线程
+        if uid and uid in _sse_session_queues:
+            old_q = _sse_session_queues[uid]
+            _sse_clients[:] = [item for item in _sse_clients if item[1] is not old_q]
+            try:
+                old_q.put_nowait(None)
+            except queue.Full:
+                pass
         if len(_sse_clients) >= _MAX_SSE_CLIENTS:
             return jsonify({"ok": False, "msg": "实时连接数已达上限，请稍后重试"}), 503
         q = queue.Queue(maxsize=200)  # 有界：慢/死连接不无限累积
-        _sse_clients.append(q)
+        _sse_clients.append((acct_key, q))
+        if uid:
+            _sse_session_queues[uid] = q
     # 生成器在响应迭代时才执行（此时已脱离请求上下文），
     # 因此所有依赖 session/g 的账号相关值必须在此（请求上下文内）先算好。
     try:
@@ -3164,8 +3300,11 @@ def api_stream():
     _log_total = len(lines)
     with _maint_cache_lock:
         _maint_init = _maint_cache.get(_session_cache_key())
-    runs = _runs_payload()
     account_email = _session_account().get("email", "")
+    runs = _runs_payload()
+    if not _is_admin_request():
+        runs = [r for r in runs if normalize_account(r["account"])
+                == normalize_account(account_email)]
     own = next((r for r in runs if normalize_account(r["account"]) == normalize_account(
         account_email)), None)
 
@@ -3190,13 +3329,16 @@ def api_stream():
             while True:
                 try:
                     data = q.get(timeout=30)
+                    if data is None:
+                        break  # 同会话新连接替换了本连接，主动退出
                     yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 except queue.Empty:
                     yield ": keepalive\n\n"
-        except GeneratorExit:
+        finally:
             with _sse_clients_lock:
-                if q in _sse_clients:
-                    _sse_clients.remove(q)
+                _sse_clients[:] = [item for item in _sse_clients if item[1] is not q]
+                if uid and _sse_session_queues.get(uid) is q:
+                    _sse_session_queues.pop(uid, None)
 
     return Response(
         generate(),
@@ -3341,7 +3483,10 @@ def api_route_airports():
     """机场搜索：?q=名称/IATA/ICAO/国家，用于出发/到达下拉。"""
     rp = _get_route_planner()
     q = request.args.get("q", "")
-    limit = min(int(request.args.get("limit", "100")), 500)
+    try:
+        limit = min(int(request.args.get("limit", "100") or 100), 500)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "limit 必须是整数"}), 400
     return jsonify(rp.search_airports(q, limit))
 
 
@@ -3380,9 +3525,24 @@ def api_route_estimate():
     ?ac=<机型名>&tpd=<每日班次>&dep=<机场ID>&arr=<机场ID>
     （可选覆盖参数：pax_load/cargo_load/fuel_price/co2_price/cost_index）
     """
+    # 受保护账号不做任何在线操作：实时精算会登录游戏并抓取需求，
+    # 同样可能干扰玩家正在线上进行的运营。
+    if _account_protected(_session_account().get("email", "")):
+        return jsonify({
+            "ok": False,
+            "error": "该账号受保护（AM4_PROTECTED_ACCOUNTS），禁止在线操作",
+        }), 403
     rp = _get_route_planner(require_login=True)
     ac_name = request.args.get("ac", "")
-    tpd = int(request.args.get("tpd", "1") or 1)
+    try:
+        tpd = int(request.args.get("tpd", "1") or 1)
+        pax_load = float(request.args.get("pax_load", rp.DEFAULT_PAX_LOAD))
+        cargo_load = float(request.args.get("cargo_load", rp.DEFAULT_CARGO_LOAD))
+        fuel_price = float(request.args.get("fuel_price", rp.DEFAULT_FUEL_PRICE))
+        co2_price = float(request.args.get("co2_price", rp.DEFAULT_CO2_PRICE))
+        cost_index = int(request.args.get("cost_index", rp.DEFAULT_COST_INDEX))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "班次与数值参数格式不正确"}), 400
     dep_id = request.args.get("dep", "")
     arr_id = request.args.get("arr", "")
     aircraft = rp.aircraft_by_name(ac_name, request.args.get("engine"))
@@ -3395,11 +3555,8 @@ def api_route_estimate():
     try:
         est = rp.estimate_route(
             aircraft, tpd, origin, dest,
-            pax_load=float(request.args.get("pax_load", rp.DEFAULT_PAX_LOAD)),
-            cargo_load=float(request.args.get("cargo_load", rp.DEFAULT_CARGO_LOAD)),
-            fuel_price=float(request.args.get("fuel_price", rp.DEFAULT_FUEL_PRICE)),
-            co2_price=float(request.args.get("co2_price", rp.DEFAULT_CO2_PRICE)),
-            cost_index=int(request.args.get("cost_index", rp.DEFAULT_COST_INDEX)),
+            pax_load=pax_load, cargo_load=cargo_load,
+            fuel_price=fuel_price, co2_price=co2_price, cost_index=cost_index,
         )
         est["ok"] = True
         est["aircraft"] = {
@@ -3425,8 +3582,10 @@ def api_route_candidates():
     maximize = request.args.get("maximize", "").strip().lower() in {"1", "true", "yes"}
     try:
         tpd = int(request.args.get("tpd", "6") or 6)
+        cost_index = int(request.args.get("cost_index", rp.DEFAULT_COST_INDEX))
+        limit = min(int(request.args.get("limit", "300") or 300), 500)
     except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "每日班次必须是整数"}), 400
+        return jsonify({"ok": False, "error": "班次、成本指数与条数必须是整数"}), 400
     if not 1 <= tpd <= 20:
         return jsonify({"ok": False, "error": "每日班次必须在 1~20 之间"}), 400
     dep_id = request.args.get("dep", "")
@@ -3440,9 +3599,9 @@ def api_route_candidates():
         exclude = _build_exclude_set()
         cands = rp.candidate_routes(
             aircraft, origin, tpd,
-            cost_index=int(request.args.get("cost_index", rp.DEFAULT_COST_INDEX)),
+            cost_index=cost_index,
             exclude=exclude,
-            limit=min(int(request.args.get("limit", "300")), 500),
+            limit=limit,
             maximize=maximize,
             max_tpd=20,
         )
@@ -3467,9 +3626,16 @@ def api_route_rank():
     """
     rp = _get_route_planner()
     ac_name = request.args.get("ac", "")
-    tpd = int(request.args.get("tpd", "6") or 6)
+    try:
+        tpd = int(request.args.get("tpd", "6") or 6)
+        limit = min(int(request.args.get("limit", "300") or 300), 500)
+        cost_index = int(request.args.get("cost_index", rp.DEFAULT_COST_INDEX))
+        pax_load = float(request.args.get("pax_load", rp.DEFAULT_PAX_LOAD))
+        fuel_price = float(request.args.get("fuel_price", rp.DEFAULT_FUEL_PRICE))
+        co2_price = float(request.args.get("co2_price", rp.DEFAULT_CO2_PRICE))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "班次与数值参数格式不正确"}), 400
     dep_id = request.args.get("dep", "")
-    limit = min(int(request.args.get("limit", "300")), 500)
     aircraft = rp.aircraft_by_name(ac_name, request.args.get("engine"))
     origin = rp.airport_by_id(dep_id)
     if not aircraft:
@@ -3480,10 +3646,8 @@ def api_route_rank():
         exclude = _build_exclude_set()
         results = rp.rank_routes(
             aircraft, origin, tpd,
-            cost_index=int(request.args.get("cost_index", rp.DEFAULT_COST_INDEX)),
-            pax_load=float(request.args.get("pax_load", rp.DEFAULT_PAX_LOAD)),
-            fuel_price=float(request.args.get("fuel_price", rp.DEFAULT_FUEL_PRICE)),
-            co2_price=float(request.args.get("co2_price", rp.DEFAULT_CO2_PRICE)),
+            cost_index=cost_index,
+            pax_load=pax_load, fuel_price=fuel_price, co2_price=co2_price,
             exclude=exclude,
             limit=limit,
         )
@@ -3507,6 +3671,13 @@ def api_route_build():
            engine?, amount?, cost_index?}
     """
     _require_csrf()
+    # 受保护账号禁止在线建设：买机/建线/改装都是真实写操作，
+    # 防止与玩家线上运营双开、误触发重复购买。
+    if _account_protected(_session_account().get("email", "")):
+        return jsonify({
+            "ok": False,
+            "error": "该账号受保护（AM4_PROTECTED_ACCOUNTS），禁止在线操作",
+        }), 403
     rp = _get_route_planner()
     data = request.get_json(silent=True)
     if request.is_json and data is None:

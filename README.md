@@ -88,11 +88,14 @@ python src/server.py
 | `AM4_MIN_A_CHECK_HOURS` | `5` | 自动起飞要求的最少 A-Check 剩余小时 |
 | `AM4_MAX_WEAR_FOR_TAKEOFF` | `80` | 自动起飞允许的最高损坏率 |
 | `AM4_MAX_CONCURRENT_LOOPS` | `3` | 全局并发循环数上限 |
-| `AM4_MAX_SSE_CLIENTS` | `50` | 实时推送连接数上限 |
+| `AM4_MAX_SSE_CLIENTS` | `8` | 实时推送连接数上限（每个连接占用一个 gunicorn 工作线程，应留出普通请求余量） |
+| `AM4_SETUP_TOKEN` | — | 网页初始化令牌：`/setup` 创建管理员时必须提供；留空则网页初始化禁用 |
+| `AM4_TRUST_PROXY` | `0` | 部署在单一可信 nginx 反代后置 `1`，按 `X-Forwarded-For` 还原真实客户端 IP |
+| `AM4_DEBUG_TEMPLATES` | `0` | 调试：置 `1` 时模板改动即时生效（生产保持 `0`） |
 | `AM4_PANEL_DB` | `data/panel.db` | 面板账号库路径 |
 | `AM4_COOKIE_SECURE` | `0` | HTTPS 部署时置 1（会话 Cookie 仅走 HTTPS，并附加 HSTS） |
 | `AM4_ADMIN_USERNAME` / `AM4_ADMIN_PASSWORD` | — | 首次启动自动创建管理员（纯管理身份） |
-| `AM4_PROTECTED_ACCOUNTS` | — | 受保护账号（逗号分隔）：待办执行/启动循环/市场抓取一律跳过，防止与线上实例双开同一账号 |
+| `AM4_PROTECTED_ACCOUNTS` | — | 受保护账号（逗号分隔）：启动循环、待办执行、市场抓取、在线建设与实时精算一律拒绝，防止与线上运营双开同一账号 |
 
 可用 `AM4_PORT` 修改本地端口。开发或只读检查时可设置 `AM4_DISABLE_SCHEDULER=1`，阻止后台待办执行。
 
@@ -100,10 +103,10 @@ python src/server.py
 
 面板已内置登录体系（替代 nginx Basic Auth）：
 
-- **首次启动**：访问 `/setup` 创建管理员账户（纯管理，不绑定游戏账号）；可选项把现有 `.env` 中的游戏账号接入为普通用户。也可在 `.env` 中配置 `AM4_ADMIN_USERNAME` / `AM4_ADMIN_PASSWORD`，启动时自动创建管理员，免去访问 `/setup`。
+- **首次启动**：在 `.env` 中设置 `AM4_SETUP_TOKEN` 后访问 `/setup` 创建管理员（需输入该令牌；纯管理，不绑定游戏账号），可选项把现有 `.env` 中的游戏账号接入为普通用户。也可在 `.env` 中配置 `AM4_ADMIN_USERNAME` / `AM4_ADMIN_PASSWORD`，启动时自动创建管理员，免去访问 `/setup`。未配置 `AM4_SETUP_TOKEN` 时网页初始化会被禁用，防止服务在初始化前暴露到公网时被抢先接管。
 - **注册**：`/register` 注册后状态为 `pending`，需管理员在管理面板审核通过才能登录。
 - **账号设置**：登录后主页「设置」可修改自动化参数（成本指数、采购阈值、现金垫、A-Check/磨损保护），并独立开关自动营销、自动买油、自动买 CO₂、自动起飞。AM4 游戏账号在注册时绑定、不可修改；管理员可在管理面板重置任意用户的面板登录密码。
-- **多账号**：每个网站账户绑定唯一的游戏账号，运行数据按账号哈希目录隔离；管理员可审核用户、停用/删除账号，并可「以该账号身份」进入与账号主人一致的主面板。
+- **多账号**：每个网站账户绑定唯一的游戏账号，运行数据按账号哈希目录隔离；管理员可审核用户、停用/删除账号，并可「以该账号身份」进入与账号主人一致的主面板。停用或删除用户会立即停止其正在运行的循环，并把该游戏账号视为受保护（等同于 `AM4_PROTECTED_ACCOUNTS`），重新启用后自动恢复。
 - **并发循环**：每个账号可各自启动循环（采集子进程按账号隔离 Cookie 与会话），系统全局限制并发循环数量（`AM4_MAX_CONCURRENT_LOOPS`，默认 3）。
 
 ## 命令行调试
@@ -139,7 +142,7 @@ python src/collector.py --loop --interval 1800
 - [deploy/nginx-am4.conf](deploy/nginx-am4.conf)：Nginx 反向代理与 HTTPS
 - [deploy/start_loop.py](deploy/start_loop.py)：systemd 启动后的循环接续助手
 
-参考配置假定项目位于 `/opt/am4/app`、虚拟环境位于 `/opt/am4/app/.venv`。部署时应修改域名、创建 `.env`、配置 HTTPS（certbot），并设置 `AM4_COOKIE_SECURE=1`。登录认证由应用自身提供（`/setup` 创建管理员），无需再配置 nginx Basic Auth；`start_loop.py` 通过 `src/.service_token` 中的服务令牌恢复循环，不依赖浏览器会话。
+参考配置假定项目位于 `/opt/am4/app`、虚拟环境位于 `/opt/am4/app/.venv`。部署时应修改域名、创建 `.env`、配置 HTTPS（certbot），并设置 `AM4_COOKIE_SECURE=1`。systemd 单元已内置 `AM4_TRUST_PROXY=1`（与 nginx 的 `X-Forwarded-For` 配套，限流按真实 IP 计数）和 `AM4_MAX_SSE_CLIENTS=6`（为普通请求预留线程）。登录认证由应用自身提供（`/setup` 创建管理员），无需再配置 nginx Basic Auth；`start_loop.py` 通过 `src/.service_token` 中的服务令牌恢复循环，不依赖浏览器会话。
 
 面板用户、绑定账号与设置保存在 `data/panel.db`（SQLite，已在 .gitignore 中）。请确保该目录仅服务用户可读写（如 `chmod 700 data`）。
 

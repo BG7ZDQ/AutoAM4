@@ -1149,6 +1149,17 @@ class ServerSchedulingTests(unittest.TestCase):
         finally:
             server._register_attempts.clear()
 
+    def test_register_rate_limited_per_username(self):
+        server._register_attempts.clear()
+        try:
+            for _ in range(3):
+                self.assertFalse(server._register_blocked("9.9.9.9", "SameName"))
+            self.assertTrue(server._register_blocked("9.9.9.9", "SameName"))
+            # 同一 IP 换用户名不受该用户名桶影响（IP 桶也未到上限）
+            self.assertFalse(server._register_blocked("9.9.9.9", "DifferentName"))
+        finally:
+            server._register_attempts.clear()
+
     def test_security_headers_present(self):
         with server.app.test_client() as client:
             resp = client.get("/login")
@@ -1156,11 +1167,114 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertEqual(resp.headers.get("X-Frame-Options"), "DENY")
         self.assertEqual(resp.headers.get("Referrer-Policy"), "same-origin")
 
+    def test_login_requires_csrf(self):
+        with server.app.test_client() as client:
+            resp = client.post(
+                "/api/login",
+                json={"username": "testadmin", "password": "test-pass-1"})
+        self.assertEqual(resp.status_code, 403)
+
     def test_admin_write_requires_csrf(self):
         with server.app.test_client() as client:
             resp = client.post("/api/admin/users/1/status",
                                json={"status": "active"})
         self.assertEqual(resp.status_code, 403)
+
+    def test_admin_targets_reject_admin_accounts(self):
+        other_admin = panel_store.create_user(
+            "otheradmin", "other-pass-1", is_admin=True, status="active")
+        try:
+            with patch.object(server, "_real_user",
+                              return_value=panel_store.get_user_by_username("testadmin")), \
+                 server.app.test_client() as client:
+                resp = client.post(
+                    f"/api/admin/users/{other_admin}/password",
+                    json={"password": "hacked-pass-1"},
+                    headers={"X-CSRF-Token": server._csrf_token})
+                self.assertEqual(resp.status_code, 403)
+                resp = client.post(
+                    f"/api/admin/users/{other_admin}/status",
+                    json={"status": "disabled"},
+                    headers={"X-CSRF-Token": server._csrf_token})
+                self.assertEqual(resp.status_code, 403)
+        finally:
+            panel_store.delete_user(other_admin)
+
+    def test_protected_account_blocks_online_build(self):
+        admin = panel_store.get_user_by_username("testadmin")
+        email = panel_store.get_account(admin["id"])["am4_email"]
+        server.PROTECTED_ACCOUNTS.add(server.normalize_account(email))
+        try:
+            with server.app.test_client() as client:
+                resp = client.post(
+                    "/api/route/build", json={"ac": "anything"},
+                    headers={"X-CSRF-Token": server._csrf_token})
+            self.assertEqual(resp.status_code, 403)
+            self.assertIn("受保护", resp.get_json()["error"])
+        finally:
+            server.PROTECTED_ACCOUNTS.discard(server.normalize_account(email))
+
+    def test_protected_account_blocks_online_estimate(self):
+        admin = panel_store.get_user_by_username("testadmin")
+        email = panel_store.get_account(admin["id"])["am4_email"]
+        server.PROTECTED_ACCOUNTS.add(server.normalize_account(email))
+        try:
+            with server.app.test_client() as client:
+                resp = client.get("/api/route/estimate?ac=x&dep=1&arr=2")
+            self.assertEqual(resp.status_code, 403)
+            self.assertIn("受保护", resp.get_json()["error"])
+        finally:
+            server.PROTECTED_ACCOUNTS.discard(server.normalize_account(email))
+
+    def test_disabled_account_is_treated_as_protected(self):
+        uid = panel_store.create_user(
+            "linkuser", "link-pass-1", am4_email="link@example.com",
+            status="active")
+        try:
+            self.assertFalse(server._account_protected("link@example.com"))
+            panel_store.set_user_status(uid, "disabled")
+            self.assertTrue(server._account_protected("LINK@example.com "))
+            panel_store.set_user_status(uid, "active")
+            self.assertFalse(server._account_protected("link@example.com"))
+        finally:
+            panel_store.delete_user(uid)
+
+    def test_disable_user_stops_running_loop(self):
+        uid = panel_store.create_user(
+            "stopuser", "stop-pass-1", am4_email="stop@example.com",
+            status="active")
+        key = server.account_key("stop@example.com")
+        proc = Mock()
+        proc.poll.return_value = None
+        server._runs[key] = {
+            "account_email": "stop@example.com",
+            "account_key": key,
+            "password": "",
+            "settings": {},
+            "mode": "loop",
+            "running": True,
+            "last_run": None,
+            "error": None,
+            "progress_total": 0,
+            "progress_current": 0,
+            "proc": proc,
+            "stop_requested": False,
+            "paths": server._paths_for_account("stop@example.com"),
+        }
+        try:
+            with patch.object(server, "_real_user",
+                              return_value=panel_store.get_user_by_username("testadmin")), \
+                 server.app.test_client() as client:
+                resp = client.post(
+                    f"/api/admin/users/{uid}/status",
+                    json={"status": "disabled"},
+                    headers={"X-CSRF-Token": server._csrf_token})
+            self.assertEqual(resp.status_code, 200)
+            self.assertTrue(server._runs[key]["stop_requested"])
+            proc.terminate.assert_called_once()
+        finally:
+            server._runs.clear()
+            panel_store.delete_user(uid)
 
     def test_csv_safe_cell_prefixes_formula_start(self):
         self.assertEqual(server._csv_safe_cell("=cmd"), "'=cmd")
@@ -1177,11 +1291,13 @@ class ServerSchedulingTests(unittest.TestCase):
         try:
             old_login = server.app.test_client().post(
                 "/api/login", json={"username": "testadmin",
-                                    "password": "test-pass-1"})
+                                    "password": "test-pass-1"},
+                headers={"X-CSRF-Token": server._csrf_token})
             self.assertEqual(old_login.status_code, 401)
             new_login = server.app.test_client().post(
                 "/api/login", json={"username": "testadmin",
-                                    "password": "env-pass-1"})
+                                    "password": "env-pass-1"},
+                headers={"X-CSRF-Token": server._csrf_token})
             self.assertEqual(new_login.status_code, 200)
         finally:
             # 恢复原密码，避免影响其他用例
@@ -1195,17 +1311,20 @@ class ServerSchedulingTests(unittest.TestCase):
         panel_store.set_user_status(uid, "active")
         client = server.app.test_client()
         client.post("/api/login",
-                    json={"username": "testadmin", "password": "test-pass-1"})
+                    json={"username": "testadmin", "password": "test-pass-1"},
+                    headers={"X-CSRF-Token": server._csrf_token})
         resp = client.post(
             "/api/admin/users/%d/password" % uid,
             json={"password": "bob-new-pass"},
             headers={"X-CSRF-Token": server._csrf_token})
         self.assertEqual(resp.status_code, 200)
         old = server.app.test_client().post(
-            "/api/login", json={"username": "resetbob", "password": "bob-old-pass"})
+            "/api/login", json={"username": "resetbob", "password": "bob-old-pass"},
+            headers={"X-CSRF-Token": server._csrf_token})
         self.assertEqual(old.status_code, 401)
         new = server.app.test_client().post(
-            "/api/login", json={"username": "resetbob", "password": "bob-new-pass"})
+            "/api/login", json={"username": "resetbob", "password": "bob-new-pass"},
+            headers={"X-CSRF-Token": server._csrf_token})
         self.assertEqual(new.status_code, 200)
 
     def test_unknown_balance_rejects_new_purchase_after_readonly_lookup(self):

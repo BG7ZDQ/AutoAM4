@@ -42,6 +42,22 @@ class PanelStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ps.create_user("dup", "dup-pass-2")
 
+    def test_duplicate_am4_email_rejected(self):
+        ps.create_user("mailer1", "mail-pass-1", am4_email="shared@example.com")
+        with self.assertRaises(ValueError):
+            ps.create_user("mailer2", "mail-pass-2", am4_email="SHARED@example.com ")
+
+    def test_settings_coerce_bool_and_bounds(self):
+        uid = ps.create_user("setter", "setter-pass-1")
+        ps.update_account(uid, settings={
+            "auto_buy_fuel": "false", "cost_index": 99999,
+            "max_wear_for_takeoff": -5,
+        })
+        settings = ps.get_account(uid)["settings"]
+        self.assertFalse(settings["auto_buy_fuel"])
+        self.assertEqual(settings["cost_index"], 999)
+        self.assertEqual(settings["max_wear_for_takeoff"], 0)
+
     def test_weak_input_rejected(self):
         with self.assertRaises(ValueError):
             ps.create_user("x", "pass")

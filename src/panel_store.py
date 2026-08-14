@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS accounts (
 """
 
 
+def normalize_email(email: str) -> str:
+    """游戏账号邮箱归一化：去空白 + 大小写折叠，用于唯一绑定判断。"""
+    return (email or "").strip().casefold()
+
+
 def _conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=15)
@@ -87,6 +92,22 @@ def init_db() -> None:
     with _lock, _conn() as conn:
         conn.executescript(_SCHEMA)
         conn.execute("PRAGMA user_version = 1")
+        # 一个网站账户只能绑定一个唯一的 AM4 游戏账号。
+        # 表达式唯一索引兼容旧库；若旧数据里已有重复绑定，跳过建索引并告警，
+        # 绝不静默合并或覆盖任何一方的数据。
+        dup = conn.execute(
+            "SELECT lower(trim(am4_email)) FROM accounts WHERE am4_email != '' "
+            "GROUP BY lower(trim(am4_email)) HAVING COUNT(*) > 1 LIMIT 1"
+        ).fetchone()
+        if dup is None:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_email_norm "
+                "ON accounts(lower(trim(am4_email))) WHERE am4_email != ''"
+            )
+        else:
+            print(
+                f"⚠ panel_store: 检测到重复绑定的游戏账号（{dup[0]}），"
+                "已跳过唯一索引迁移，请人工去重后重启", flush=True)
     _harden_perms()
 
 
@@ -137,6 +158,14 @@ def create_user(
     now = time.time()
     normalized = normalize_settings(settings or {})
     with _lock, _conn() as conn:
+        email_norm = normalize_email(am4_email)
+        if email_norm:
+            dup = conn.execute(
+                "SELECT 1 FROM accounts WHERE lower(trim(am4_email)) = ? LIMIT 1",
+                (email_norm,),
+            ).fetchone()
+            if dup is not None:
+                raise ValueError("该游戏账号已绑定其他网站账户")
         try:
             cur = conn.execute(
                 "INSERT INTO users (username, password_hash, is_admin, status, created_at, approved_at) "
@@ -216,13 +245,49 @@ def normalize_settings(raw: dict) -> dict:
         if key not in DEFAULT_SETTINGS:
             continue
         if key.startswith("auto_"):
-            out[key] = bool(value)
-        else:
-            try:
-                out[key] = int(str(value).replace(",", ""))
-            except (TypeError, ValueError):
-                pass
+            out[key] = _coerce_bool(value)
+            continue
+        parsed = _coerce_int(value)
+        if parsed is None:
+            continue
+        lo, hi = _SETTING_BOUNDS.get(key, (None, None))
+        if lo is not None:
+            parsed = max(lo, parsed)
+        if hi is not None:
+            parsed = min(hi, parsed)
+        out[key] = int(parsed)
     return out
+
+
+_SETTING_BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "cost_index": (0, 999),
+    "min_fuel": (0, 10 ** 15),
+    "cash_reserve": (0, 10 ** 15),
+    "max_resource_spend": (0, 10 ** 15),
+    "fuel_buy_below": (0, 10 ** 9),
+    "co2_buy_below": (0, 10 ** 9),
+    "min_a_check_hours": (0, 24 * 365),
+    "max_wear_for_takeoff": (0, 100),
+}
+
+
+def _coerce_bool(value) -> bool:
+    """布尔开关解析：布尔直接通过；数字按非零；字符串按常见真值词表。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "y"}
+
+
+def _coerce_int(value) -> int | None:
+    """数值解析：接受带千分位逗号的数字字符串；解析失败返回 None。"""
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(str(value).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def get_account(user_id: int) -> dict | None:
@@ -252,7 +317,16 @@ def update_account(
     current = get_account(user_id)
     new_settings = normalize_settings(settings if settings is not None
                                       else (current or {}).get("settings", {}))
+    email_norm = normalize_email(am4_email) if am4_email is not None else None
     with _lock, _conn() as conn:
+        if email_norm:
+            dup = conn.execute(
+                "SELECT 1 FROM accounts WHERE lower(trim(am4_email)) = ? "
+                "AND user_id != ? LIMIT 1",
+                (email_norm, user_id),
+            ).fetchone()
+            if dup is not None:
+                raise ValueError("该游戏账号已绑定其他网站账户")
         if current is None:
             conn.execute(
                 "INSERT INTO accounts (user_id, am4_email, am4_password, settings, updated_at) "
