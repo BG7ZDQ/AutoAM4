@@ -420,14 +420,14 @@ def _auth_gate():
 @app.route("/login")
 def login_page():
     if _effective_user() is not None:
-        return redirect(url_for("index_page"))
+        return redirect(url_for("index"))
     return render_template("login.html", csrf_token=_session_csrf())
 
 
 @app.route("/register")
 def register_page():
     if _effective_user() is not None:
-        return redirect(url_for("index_page"))
+        return redirect(url_for("index"))
     return render_template("register.html", csrf_token=_session_csrf())
 
 

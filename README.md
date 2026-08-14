@@ -87,6 +87,11 @@ python src/server.py
 | `AM4_CO2_BUY_BELOW` | `125` | CO₂ 采购价格阈值（严格小于） |
 | `AM4_MIN_A_CHECK_HOURS` | `5` | 自动起飞要求的最少 A-Check 剩余小时 |
 | `AM4_MAX_WEAR_FOR_TAKEOFF` | `80` | 自动起飞允许的最高损坏率 |
+| `AM4_MAX_CONCURRENT_LOOPS` | `3` | 全局并发循环数上限 |
+| `AM4_MAX_SSE_CLIENTS` | `50` | 实时推送连接数上限 |
+| `AM4_PANEL_DB` | `data/panel.db` | 面板账号库路径 |
+| `AM4_COOKIE_SECURE` | `0` | HTTPS 部署时置 1（会话 Cookie 仅走 HTTPS，并附加 HSTS） |
+| `AM4_ADMIN_USERNAME` / `AM4_ADMIN_PASSWORD` | — | 首次启动自动创建管理员（纯管理身份） |
 
 可用 `AM4_PORT` 修改本地端口。开发或只读检查时可设置 `AM4_DISABLE_SCHEDULER=1`，阻止后台待办执行。
 
@@ -96,7 +101,7 @@ python src/server.py
 
 - **首次启动**：访问 `/setup` 创建管理员账户（纯管理，不绑定游戏账号）；可选项把现有 `.env` 中的游戏账号接入为普通用户。也可在 `.env` 中配置 `AM4_ADMIN_USERNAME` / `AM4_ADMIN_PASSWORD`，启动时自动创建管理员，免去访问 `/setup`。
 - **注册**：`/register` 注册后状态为 `pending`，需管理员在管理面板审核通过才能登录。
-- **账号设置**：登录后主页「设置」可修改 AM4 凭据与自动化参数（成本指数、采购阈值、现金垫、A-Check/磨损保护），并独立开关自动营销、自动买油、自动买 CO₂、自动起飞。
+- **账号设置**：登录后主页「设置」可修改自动化参数（成本指数、采购阈值、现金垫、A-Check/磨损保护），并独立开关自动营销、自动买油、自动买 CO₂、自动起飞。AM4 游戏账号在注册时绑定、不可修改；管理员可在管理面板重置任意用户的面板登录密码。
 - **多账号**：每个网站账户绑定唯一的游戏账号，运行数据按账号哈希目录隔离；管理员可审核用户、停用/删除账号，并可「以该账号身份」进入与账号主人一致的主面板。
 - **并发循环**：每个账号可各自启动循环（采集子进程按账号隔离 Cookie 与会话），系统全局限制并发循环数量（`AM4_MAX_CONCURRENT_LOOPS`，默认 3）。
 

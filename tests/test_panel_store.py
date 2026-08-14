@@ -1,15 +1,10 @@
-import os
-import sys
-import tempfile
-import unittest
-from pathlib import Path
+"""?????panel_store????????/??/??/???"""
+from bootstrap import *
 
-# 独立临时数据库，绝不触碰真实 data/panel.db
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-os.environ["AM4_PANEL_DB"] = os.path.join(tempfile.mkdtemp(), "panel_test.db")
 
 import panel_store as ps
+
+
 
 
 class PanelStoreTests(unittest.TestCase):
