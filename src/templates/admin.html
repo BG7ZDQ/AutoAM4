@@ -71,21 +71,23 @@ function loadUsers(){
     tb.innerHTML = d.users.map(u=>{
       const st=esc(u.status), role=u.is_admin?'管理员':'用户';
       const ops=[];
-      if(u.is_admin){ ops.push('<span class="note">—</span>'); }
-      else{
+      if(!u.is_admin){
         ops.push('<button class="btn-pri" onclick="enter('+u.id+')">进入</button>');
         if(u.status==='pending') ops.push('<button class="btn-ok" onclick="setStatus('+u.id+',\'active\')">通过</button>');
         if(u.status!=='disabled') ops.push('<button class="btn-warn" onclick="setStatus('+u.id+',\'disabled\')">停用</button>');
         if(u.status==='disabled') ops.push('<button class="btn-ok" onclick="setStatus('+u.id+',\'active\')">启用</button>');
         ops.push('<button class="btn-err" onclick="delUser('+u.id+')">删除</button>');
       }
+      const opsCell = u.is_admin
+        ? '<td style="color:var(--t3)">—</td>'
+        : '<td><button class="ops-toggle btn-pri" onclick="toggleOps(this)">⚙ 操作</button>'+
+          '<div class="ops">'+ops.join('')+'</div></td>';
       return '<tr><td>'+u.id+'</td><td>'+esc(u.username)+'</td>'+
         '<td><span class="badge '+(u.is_admin?'admin':'')+'">'+role+'</span></td>'+
         '<td><span class="badge '+st+'">'+esc(u.status)+'</span></td>'+
         '<td>'+mailCell(u.am4_email)+'</td>'+
         '<td>'+new Date(u.created_at*1000).toLocaleString()+'</td>'+
-        '<td><button class="ops-toggle btn-pri" onclick="toggleOps(this)">⚙ 操作</button>'+
-        '<div class="ops">'+ops.join('')+'</div></td></tr>';
+        opsCell+'</tr>';
     }).join('');
   });
 }
