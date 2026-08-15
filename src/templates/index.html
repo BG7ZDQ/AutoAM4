@@ -123,12 +123,13 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 .set-toggle{display:flex;align-items:center;gap:8px;padding:10px 12px;border:1px solid var(--brd);border-radius:10px;background:var(--thb);font-size:.88rem;cursor:pointer}
 .set-toggle input{width:16px;height:16px;accent-color:var(--ac)}
 </style></head><body><div class="app">
-<div class="header"><div class="header-main"><h1><span class="icon">✈</span> AM4 机队中心 <span class="sse-dot off" id="sseDot"></span></h1><div class="header-meta"><span class="status-chip{{ ' running' if initial_running else '' }}" id="runChip"><span class="dot"></span><span id="runChipTxt">{{ '运行中' if initial_running else '空闲' }}</span></span></div></div>
+<script type="application/json" id="bootData">{{ {"csrf_token": csrf_token, "account": account, "username": username, "initial_running": initial_running, "initial_mode": initial_mode, "dashboard_bootstrap": dashboard_bootstrap}|tojson }}</script>
+<div class="header"><div class="header-main"><h1><span class="icon">✈</span> AM4 机队中心 <span class="sse-dot off" id="sseDot"></span></h1><div class="header-meta"><span class="status-chip" id="runChip"><span class="dot"></span><span id="runChipTxt">空闲</span></span></div></div>
 <div class="header-actions">
 <button class="btn btn-outline btn-sm btn-icon" id="btnTheme" onclick="toggleTheme()">🌙</button>
 <button class="btn btn-outline btn-sm" onclick="refreshAll()">🔄 刷新</button>
-<button class="btn btn-success" id="btnRunLoop" onclick="run('loop')"{% if initial_running %} style="display:none"{% endif %}><span class="b-full">🔁 循环运行</span><span class="b-short">🔁 循环</span></button>
-<button class="btn btn-danger" id="btnStop" onclick="stop()" style="display:{{ 'inline-flex' if initial_running else 'none' }}">⏹ 停止</button>
+<button class="btn btn-success" id="btnRunLoop" onclick="run('loop')"><span class="b-full">🔁 循环运行</span><span class="b-short">🔁 循环</span></button>
+<button class="btn btn-danger" id="btnStop" onclick="stop()" style="display:none">⏹ 停止</button>
 </div></div>
 <div class="imp-banner" id="impBanner" style="display:none;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;background:var(--card);border:1px solid var(--wr);border-radius:var(--r);padding:8px 14px;margin-bottom:16px;font-size:.85rem">
   <span>👁 正在以 <b id="impName"></b> 的身份查看</span>
@@ -148,7 +149,9 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <script>
 /* 在其余页面尚未下载完成时，先用浏览器缓存恢复首屏机队。 */
 (function(){
-  const key='am4-dashboard-cache-v1',account={{ account|tojson }},username={{ username|tojson }},maxAge=7*24*3600*1000;
+  let boot={};try{boot=JSON.parse(document.getElementById('bootData').textContent)}catch(_){boot={}}
+  const account=boot.account||'',username=boot.username||'';
+  const key='am4-dashboard-cache-v1',maxAge=7*24*3600*1000;
   function compact(v){const n=parseFloat(String(v||'').replace(/,/g,''));if(!Number.isFinite(n)||Math.abs(n)<100000)return v;const sign=n<0?'-':'',value=(Math.abs(n)/1000000).toFixed(1).replace(/\.0$/,'');return sign+value+'M'}
   function order(rows){return rows.slice().sort((a,b)=>String(a['注册号']||'').localeCompare(String(b['注册号']||''),'zh-CN',{numeric:true,sensitivity:'base'}))}
   function td(text,cls){const e=document.createElement('td');if(cls)e.className=cls;e.textContent=text||'--';return e}
@@ -208,10 +211,12 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 </div>
 </div>
 <script>
-let CSRF="{{ csrf_token }}";
-let SERVER_ACCOUNT={{ account|tojson }};
-let SERVER_USERNAME={{ username|tojson }};
-let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }};
+let BOOT={};try{BOOT=JSON.parse(document.getElementById('bootData').textContent)}catch(_){BOOT={}}
+let CSRF=BOOT.csrf_token||'';
+let SERVER_ACCOUNT=BOOT.account||'';
+let SERVER_USERNAME=BOOT.username||'';
+let SERVER_BOOTSTRAP=BOOT.dashboard_bootstrap||{};
+uc(!!BOOT.initial_running);ub(!!BOOT.initial_running,BOOT.initial_mode||'');
 // ===== 会话校验 / 管理员 / 模拟身份 =====
 function logout(){fetch('/api/logout',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.href='/login'})}
 function exitImpersonate(){fetch('/api/admin/unimpersonate',{method:'POST',headers:{'X-CSRF-Token':CSRF}}).then(function(){location.href='/admin'})}

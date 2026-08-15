@@ -205,11 +205,12 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertIn(":root{color-scheme:light", template)
         self.assertIn("DASH_CACHE_KEY='am4-dashboard-cache-v1'", template)
         self.assertIn("String(SERVER_ACCOUNT||'').toLowerCase()", template)
-        self.assertIn("let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }}", template)
+        self.assertIn('type="application/json" id="bootData"', template)
+        self.assertIn("let SERVER_BOOTSTRAP=BOOT.dashboard_bootstrap||{}", template)
         self.assertIn("restoreServerSnapshot(restoreDashboardCache())", template)
         self.assertIn("a.length+c.length===0&&fullFd.length+fullFdc.length>0", template)
         self.assertLess(template.index("window.__AM4_CACHE_STATUS='hit'"),
-                        template.index("let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }}"))
+                        template.index("let SERVER_BOOTSTRAP=BOOT.dashboard_bootstrap||{}"))
         self.assertIn("window.__AM4_CACHE_WRITE_STATUS='ok'", template)
         self.assertIn("window.addEventListener('pagehide',saveDashboardCache)", template)
         self.assertIn("function logClass(line)", template)
@@ -219,12 +220,12 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertIn("document.getElementById('sb').textContent=mobile?compact(m.balance):m.balance", template)
         self.assertNotIn("loopCards", template)
         self.assertIn("function ownEvent(d)", template)
-        self.assertIn("{{ '运行中' if initial_running else '空闲' }}", template)
+        self.assertIn('id="runChipTxt"', template)
+        self.assertIn("uc(!!BOOT.initial_running)", template)
         self.assertIn("function chips(c)", template)
         self.assertIn("if(row['_pending_build'])tr.style.background='rgba(255,193,7,.12)'", template)
         self.assertIn("function order(rows)", template)
         self.assertIn("renderHubOptions();applyFleetView();rm()", template)
         self.assertLess(template.index("window.st=function(t)"),
-                        template.index("let SERVER_BOOTSTRAP={{ dashboard_bootstrap|tojson }}"))
-
+                        template.index("let SERVER_BOOTSTRAP=BOOT.dashboard_bootstrap||{}"))
 
