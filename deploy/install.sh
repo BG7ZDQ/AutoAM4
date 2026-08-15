@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# AM4 机队中心 Linux 一键安装脚本（Ubuntu / Debian）
+# AM4 机队中心 v3.0.0 Linux 一键安装脚本（Ubuntu / Debian）
 # 用法：sudo bash deploy/install.sh
 #
 # 功能：
