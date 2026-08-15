@@ -24,8 +24,16 @@ button.ghost{background:transparent;border:1px solid var(--brd);color:var(--t)}
   <p>当前账号 <b>{{ username }}</b> 暂无管理员权限。<br>请使用管理员账号登录后访问管理面板。</p>
   <div>
     <button class="ghost" onclick="location.href='/'">返回主页</button>
-    <button onclick="location.href='/login'">切换账号</button>
+    <button onclick="switchAccount()">切换账号</button>
   </div>
 </div>
+<script>
+const CSRF = "{{ csrf_token }}";
+function switchAccount(){
+  fetch('/api/logout',{method:'POST',headers:{'X-CSRF-Token':CSRF}})
+    .catch(function(){})
+    .finally(function(){ location.href='/login'; });
+}
+</script>
 </body>
 </html>
