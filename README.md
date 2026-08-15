@@ -38,7 +38,7 @@
 
 ## 运行方式
 
-需要 Python 3.10+、可用的 `curl`，以及 AM4 Web 版账号。
+需要 Python 3.10+、可用的 `curl`。普通网站账号需要在网页注册时绑定一个 AM4 Web 版游戏账号，管理员账号为纯管理身份、不绑定游戏账号。
 
 ```bash
 git clone <repository-url> am4-dashboard
@@ -56,9 +56,36 @@ cp .env.example .env
 python src/server.py
 ```
 
-在 `.env` 中填入账号凭据后，访问 <http://127.0.0.1:5000>，点击“循环运行”。
+首次启动时，可以在 `.env` 中设置 `AM4_SETUP_TOKEN` 后访问 <http://127.0.0.1:5000/setup> 创建管理员；也可以在 `.env` 中配置 `AM4_ADMIN_USERNAME` / `AM4_ADMIN_PASSWORD`，服务启动时自动创建管理员。管理员登录管理面板审核普通注册用户，普通用户登录后即可在主页点击“循环运行”。
+
+`.env` 中的游戏账号（`AM4_EMAIL` / `AM4_PASSWORD`）是可选的引导账号，不填写也能启动面板和 `/setup`；只有真正启动某个账号的采集循环时，该账号才需要可用的游戏凭据。
 
 `.env`、Cookie、CSRF 令牌和 `outputs/` 运行数据均已被 Git 忽略。不要把这些文件手工加入版本库。
+
+## 生产部署
+
+### 一键安装（推荐）
+
+在 Ubuntu / Debian 服务器上以 root 运行：
+
+```bash
+sudo bash deploy/install.sh
+```
+
+> [!WARNING]
+> 安装脚本尚未经过完整的实机测试，请在测试服务器上谨慎使用，部署前务必备份数据；如有问题欢迎反馈。
+
+脚本会交互询问安装目录、服务用户、域名、HTTPS 方式（Let's Encrypt / 自签名 / 仅 HTTP）、游戏账号（可选）与管理员账号（可选），随后自动生成 `.env`、初始化令牌、会话密钥与服务令牌，创建虚拟环境并安装依赖，写入 Nginx 反向代理配置并签发/生成证书，注册 `am4.service` 并开机自启。安装完成后按提示通过 `/setup`（初始化令牌在服务器 `.env` 中）或已自动创建的管理员登录。
+
+仓库同时保留了供手动部署的参考配置：
+
+- [deploy/am4.service](deploy/am4.service)：单进程 Gunicorn + 自动启动循环
+- [deploy/nginx-am4.conf](deploy/nginx-am4.conf)：Nginx 反向代理与 HTTPS
+- [deploy/start_loop.py](deploy/start_loop.py)：systemd 启动后的循环接续助手
+
+参考配置假定项目位于 `/opt/am4/app`、虚拟环境位于 `/opt/am4/app/.venv`。部署时应修改域名、创建 `.env`、配置 HTTPS（certbot），并设置 `AM4_COOKIE_SECURE=1`。systemd 单元已内置 `AM4_TRUST_PROXY=1`（与 nginx 的 `X-Forwarded-For` 配套，限流按真实 IP 计数）和 `AM4_MAX_SSE_CLIENTS=6`（为普通请求预留线程）。登录认证由应用自身提供（`/setup` 创建管理员），无需再配置 nginx Basic Auth；`start_loop.py` 通过 `src/.service_token` 中的服务令牌恢复循环，不依赖浏览器会话。
+
+面板用户、绑定账号与设置保存在 `data/panel.db`（SQLite，已在 .gitignore 中）。请确保该目录仅服务用户可读写（如 `chmod 700 data`）。
 
 ## 调度策略
 
@@ -135,31 +162,6 @@ python src/collector.py --loop --interval 1800
 - `run_log.txt`：当前运行日志
 
 `data/` 中的机场、机型和离线需求矩阵用于本地航线筛选与收益估算。
-
-## 生产部署
-
-### 一键安装（推荐）
-
-在 Ubuntu / Debian 服务器上以 root 运行：
-
-```bash
-sudo bash deploy/install.sh
-```
-
-> [!WARNING]
-> 安装脚本尚未经过完整的实机测试，请在测试服务器上谨慎使用，部署前务必备份数据；如有问题欢迎反馈。
-
-脚本会交互询问安装目录、服务用户、域名、HTTPS 方式（Let's Encrypt / 自签名 / 仅 HTTP）、游戏账号（可选）与管理员账号（可选），随后自动生成 `.env`、初始化令牌、会话密钥与服务令牌，创建虚拟环境并安装依赖，写入 Nginx 反向代理配置并签发/生成证书，注册 `am4.service` 并开机自启。安装完成后按提示通过 `/setup`（初始化令牌在服务器 `.env` 中）或已自动创建的管理员登录。
-
-仓库同时保留了供手动部署的参考配置：
-
-- [deploy/am4.service](deploy/am4.service)：单进程 Gunicorn + 自动启动循环
-- [deploy/nginx-am4.conf](deploy/nginx-am4.conf)：Nginx 反向代理与 HTTPS
-- [deploy/start_loop.py](deploy/start_loop.py)：systemd 启动后的循环接续助手
-
-参考配置假定项目位于 `/opt/am4/app`、虚拟环境位于 `/opt/am4/app/.venv`。部署时应修改域名、创建 `.env`、配置 HTTPS（certbot），并设置 `AM4_COOKIE_SECURE=1`。systemd 单元已内置 `AM4_TRUST_PROXY=1`（与 nginx 的 `X-Forwarded-For` 配套，限流按真实 IP 计数）和 `AM4_MAX_SSE_CLIENTS=6`（为普通请求预留线程）。登录认证由应用自身提供（`/setup` 创建管理员），无需再配置 nginx Basic Auth；`start_loop.py` 通过 `src/.service_token` 中的服务令牌恢复循环，不依赖浏览器会话。
-
-面板用户、绑定账号与设置保存在 `data/panel.db`（SQLite，已在 .gitignore 中）。请确保该目录仅服务用户可读写（如 `chmod 700 data`）。
 
 ## 测试
 
