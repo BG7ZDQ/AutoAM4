@@ -4928,10 +4928,16 @@ def _runner(run: dict) -> None:
                 # 用户已停止：不再向日志追加任何内容
                 pass
             else:
-                if (not run["error"]
-                        and proc.returncode not in (0, -15)):
-                    run["error"] = f"脚本退出码: {proc.returncode}"
-                _append_log(f"脚本进程已退出（code {proc.returncode}）",
+                rc = proc.returncode
+                if not run["error"] and rc not in (0, -15):
+                    run["error"] = f"脚本退出码: {rc}"
+                if run["error"]:
+                    reason = run["error"]
+                elif rc == -15:
+                    reason = "服务重启或外部终止"
+                else:
+                    reason = "脚本主动退出"
+                _append_log(f"脚本进程已退出（code {rc}，{reason}）",
                             paths=run_paths)
     except Exception as e:
         run["error"] = str(e)
