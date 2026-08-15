@@ -4508,13 +4508,14 @@ def _loop_running(email: str) -> bool:
 def _resume_loop_targets() -> list[tuple[str, str, dict]]:
     """读取上次运行中的账号，逐个解析凭据与设置用于续接。"""
     targets = []
+    emails: list[str] = []
     try:
         if _ACTIVE_LOOPS_FILE.exists():
-            emails = json.loads(_ACTIVE_LOOPS_FILE.read_text(encoding="utf-8"))
-        else:
-            emails = [_active_credentials()[0]]
+            data = json.loads(_ACTIVE_LOOPS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                emails = [str(e) for e in data if e]
     except Exception:
-        emails = [_active_credentials()[0]]
+        pass
     for email in emails:
         if not email:
             continue
