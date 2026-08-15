@@ -149,13 +149,19 @@ def _paths() -> dict:
     """当前作用域的数据路径。
 
     登录请求内优先返回登录用户（或被模拟用户）账号的路径；
-    后台线程/服务令牌调用没有请求上下文，回退到循环账号路径。
+    后台线程优先使用线程级任务账号路径；否则回退到循环账号路径。
     """
     try:
         if g.session_paths is not None:
             return g.session_paths
     except Exception:
         pass
+    try:
+        ctx_paths = _task_account_ctx.paths
+    except Exception:
+        ctx_paths = None
+    if ctx_paths:
+        return ctx_paths
     with _account_lock:
         email = _active_account_email
     return _paths_for_account(email)
