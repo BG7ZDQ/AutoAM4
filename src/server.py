@@ -170,8 +170,11 @@ def _paths() -> dict:
 def _migrate_legacy_outputs() -> None:
     """旧版本数据位于 outputs/ 根目录：迁移到当前账号子目录（仅当子目录为空时）。"""
     try:
+        env_email = _current_env_credentials()[0]
+        if not env_email:
+            return
         legacy = OUTPUTS_ROOT
-        d = account_output_dir(OUTPUTS_ROOT, _current_env_credentials()[0])
+        d = account_output_dir(OUTPUTS_ROOT, env_email)
         if legacy != d and legacy.exists() and not any(d.iterdir()):
             for f in legacy.iterdir():
                 # 只迁移已知的旧版数据文件，避免误搬 panel.db/日志等无关文件
