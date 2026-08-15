@@ -163,7 +163,7 @@ def _paths() -> dict:
     if ctx_paths:
         return ctx_paths
     with _account_lock:
-        email = _active_account_email
+        email = _active_account_email or "__unbound__"
     return _paths_for_account(email)
 
 
