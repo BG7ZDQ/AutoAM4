@@ -21,10 +21,10 @@ button.ghost{background:transparent;border:1px solid var(--brd);color:var(--t)}
 <body>
 <div class="card">
   <h1>🔒 需要管理员权限</h1>
-  <p>当前登录的是 <b>{{ username }}</b>，没有管理员权限。<br>请使用管理员账号登录后访问管理面板。</p>
+  <p>当前账号 <b>{{ username }}</b> 暂无管理员权限。<br>请使用管理员账号登录后访问管理面板。</p>
   <div>
-    <button class="ghost" onclick="location.href='/'">返回我的面板</button>
-    <button onclick="location.href='/login'">切换管理员账号</button>
+    <button class="ghost" onclick="location.href='/'">返回主页</button>
+    <button onclick="location.href='/login'">切换账号</button>
   </div>
 </div>
 </body>
