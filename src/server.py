@@ -939,10 +939,8 @@ _runs: dict[str, dict] = {}
 MAX_CONCURRENT_LOOPS = max(1, int(os.environ.get("AM4_MAX_CONCURRENT_LOOPS", "3")))
 # 持久化"正在运行的循环账号"，供 systemd 重启后由服务令牌续接
 _ACTIVE_LOOPS_FILE = ROOT / "data" / "active_loops.json"
-# SSE 订阅者：(账号键, 队列)。事件按账号路由，同一会话只保留一条连接，
-# 避免跨账号数据互相可见，也避免单个用户占满全部工作线程。
+# SSE 订阅者：(账号键, 队列)。事件按账号路由，同一账号允许多设备各持一条连接。
 _sse_clients: list[tuple[str, queue.Queue]] = []
-_sse_session_queues: dict = {}
 _sse_clients_lock = threading.Lock()
 # 上限默认与部署单元 gunicorn --threads 对齐（8），需给普通请求预留线程；
 # 部署时可按实际线程数调整 AM4_MAX_SSE_CLIENTS。
@@ -3530,22 +3528,11 @@ def api_status():
 @app.route("/api/stream")
 def api_stream():
     acct_key = account_key(_session_account().get("email") or "__unbound__")
-    uid = session.get("uid")
     with _sse_clients_lock:
-        # 同一会话只保留一条连接：新连接替换旧连接并通知其退出，释放工作线程
-        if uid and uid in _sse_session_queues:
-            old_q = _sse_session_queues[uid]
-            _sse_clients[:] = [item for item in _sse_clients if item[1] is not old_q]
-            try:
-                old_q.put_nowait(None)
-            except queue.Full:
-                pass
         if len(_sse_clients) >= _MAX_SSE_CLIENTS:
             return jsonify({"ok": False, "msg": "实时连接数已达上限，请稍后重试"}), 503
         q = queue.Queue(maxsize=200)  # 有界：慢/死连接不无限累积
         _sse_clients.append((acct_key, q))
-        if uid:
-            _sse_session_queues[uid] = q
     # 生成器在响应迭代时才执行（此时已脱离请求上下文），
     # 因此所有依赖 session/g 的账号相关值必须在此（请求上下文内）先算好。
     try:
@@ -3594,8 +3581,6 @@ def api_stream():
         finally:
             with _sse_clients_lock:
                 _sse_clients[:] = [item for item in _sse_clients if item[1] is not q]
-                if uid and _sse_session_queues.get(uid) is q:
-                    _sse_session_queues.pop(uid, None)
 
     return Response(
         generate(),

@@ -176,12 +176,12 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <div class="table-scroll" id="rpCandWrap" style="display:none;margin-top:12px;max-height:380px"><table id="rt"><thead><tr><th>到达机场</th><th>距离</th><th>时长</th><th>班次/日</th><th id="rpDemandHead">需求 Y/J/F</th><th id="rpConfigHead">舱位 Y/J/F</th><th>收益/日</th><th>净利/日</th><th>回本</th></tr></thead><tbody id="rpCandList"></tbody></table></div>
 <div class="route-result" id="rpResult" style="display:none;margin-top:12px;background:var(--bg);border:1px solid var(--brd);border-radius:var(--r);padding:14px;font-size:.85rem"></div>
 </div>
-<div style="margin-top:8px;font-size:.75rem;color:var(--t3)">系统将根据条件自动计算所有候选航线；按每日净利降序，以供参考和自动建设。</div>
+<div style="margin-top:8px;font-size:.75rem;color:var(--t3)">系统将根据条件自动计算所有候选航线，以供参考和自动建设。</div>
 </div>
 <div class="tab-content" id="tabPending" style="display:none"><div class="msec-head"><span>⏳ 待定任务 <span class="msec-sub" id="pc"></span></span></div><div class="table-scroll"><table id="pt"><thead><tr><th>任务</th><th>触发时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="ptb"><tr><td colspan="4" class="empty"><div class="icon">⏳</div>暂无待定任务</td></tr></tbody></table></div><div style="margin-top:8px;font-size:.75rem;color:var(--t3)">交付等待等任务会在指定时间自动触发下一步。</div></div><div class="tab-content" id="tabMaintenance" style="display:none"><div class="maint-req "><div class="maint-sec"><div class="msec-head"><span>✈️ 飞机检修预警 <span class="msec-sub" id="mnCount"></span></span></div><div class="table-scroll"><table id="mtNeed"><thead><tr><th>注册号</th><th>距A-Check</th><th>损坏率</th><th>状态</th></tr></thead><tbody id="moNeed"><tr><td colspan="4" class="empty"><div class="icon">🛡️</div>暂无检修预警，全部飞机状态良好</td></tr></tbody></table></div></div></div><div style="margin-top:8px;font-size:.75rem;color:var(--t3)" id="mi"></div></div>
 <div class="tab-content" id="tabLog" style="display:none"><div class="log-header"><span class="section-title">📋 运行日志</span><span id="rb" style="display:none" class="running-indicator"><span class="spinner"></span>运行中 <span class="mode-tag" id="mt"></span></span><button class="btn btn-outline btn-sm" onclick="window.location='/api/log/download'">⬇ 原始日志</button></div><div class="console" id="lc"><span class="dim">等待首次运行…</span></div><div style="margin-top:8px;font-size:.75rem;color:var(--t3)">上次运行: <span id="lr">--</span></div></div>
 <div class="tab-content" id="tabSettings" style="display:none">
-<div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:16px;max-width:720px">
+<div style="background:var(--card);border:1px solid var(--brd);border-radius:var(--r);padding:16px;width:100%">
 <div class="msec-head"><span>⚙️ 自动化设置</span></div>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-top:12px">
 <div><label class="set-label">起飞成本指数</label><input class="set-in" id="setCostIndex" type="number" min="0" max="200"></div>
