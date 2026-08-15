@@ -452,18 +452,24 @@ def _stop_run_for_email(email: str, reason: str = "停用") -> bool:
     if not email:
         return False
     key = account_key(email)
+    stopped = False
     with _run_lock:
         run = _runs.get(key)
-        if not run or not run.get("running"):
-            return False
-        proc = run.get("proc")
-        run["stop_requested"] = True
-        if proc and proc.poll() is None:
-            proc.terminate()
-        msg = f"⏹ 账号已被管理员{reason}，循环已停止\n"
-        _append_log(msg, paths=run.get("paths"))
-        _broadcast_sse({"type": "log", "line": msg, "account": email})
-    return True
+        if run and run.get("running"):
+            proc = run.get("proc")
+            run["stop_requested"] = True
+            if proc and proc.poll() is None:
+                proc.terminate()
+            msg = f"⏹ 账号已被管理员{reason}，循环已停止\n"
+            _append_log(msg, paths=run.get("paths"))
+            _broadcast_sse({"type": "log", "line": msg, "account": email})
+            run["running"] = False
+            run["mode"] = ""
+            stopped = True
+    with _desired_lock:
+        _desired_loops.discard(normalize_account(email))
+    _persist_active_loops()
+    return stopped
 
 
 _PUBLIC_PAGES = {"/login", "/register", "/setup"}
@@ -2435,7 +2441,7 @@ def _run_pending_task(task: dict) -> None:
             remaining_minutes = max(1, int((trigger_at - time.time() + 59) // 60))
             _publish_log(
                 f"🔧 {reg} 已排定维护/改装\n"
-                f" 顺延到完成后约 {remaining_minutes} 分钟再检查需求并尝试起飞"
+                f"顺延到完成后约 {remaining_minutes} 分钟再检查需求并尝试起飞"
             )
             return
         if str(latest_status.get("停飞", "0") or "0").strip() not in {"", "0", "false", "False"}:
@@ -4433,13 +4439,28 @@ def api_run():
     return jsonify({"ok": True, "msg": "脚本已启动", "account": run_email})
 
 
-def _persist_active_loops() -> None:
-    """把正在运行的循环账号写入状态文件，供 systemd 重启后续接。"""
+_desired_loops: set[str] = set()
+_desired_lock = threading.Lock()
+
+
+def _load_desired_loops() -> None:
+    """读取期望保持运行的账号列表（重启后据此自动续接）。"""
+    global _desired_loops
     try:
-        with _run_lock:
-            emails = [r.get("account_email", "")
-                      for r in _runs.values() if r.get("running")]
+        if _ACTIVE_LOOPS_FILE.exists():
+            data = json.loads(_ACTIVE_LOOPS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                _desired_loops = {normalize_account(e) for e in data if e}
+    except Exception:
+        pass
+
+
+def _persist_active_loops() -> None:
+    """持久化期望运行中的账号列表，供 systemd 重启后自动恢复。"""
+    try:
         _ACTIVE_LOOPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with _desired_lock:
+            emails = sorted(_desired_loops)
         _ACTIVE_LOOPS_FILE.write_text(
             json.dumps(emails, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
@@ -4565,6 +4586,8 @@ def _start_loop(email: str, password: str, settings: dict, mode: str) -> tuple[b
         with _stopped_lock:
             _stopped_accounts.discard(normalize_account(email))
         _persist_stopped_accounts()
+        with _desired_lock:
+            _desired_loops.add(normalize_account(email))
     _persist_active_loops()
     _broadcast_sse({"type": "start", "mode": mode, "account": email})
     threading.Thread(target=_runner, args=(run,), daemon=True).start()
@@ -4929,8 +4952,6 @@ def _runner(run: dict) -> None:
                 "account": email,
             })
             run["running"] = False
-        # 不能在持有 _run_lock 时调用 _persist_active_loops（它内部会再次取锁）
-        _persist_active_loops()
         # 营销任务必须归属本账号：在清空线程账号上下文之前补齐
         _ensure_marketing_tasks()
         _task_account_ctx.paths = None
@@ -4964,6 +4985,8 @@ def api_stop():
     with _stopped_lock:
         _stopped_accounts.add(normalize_account(target_email))
     _persist_stopped_accounts()
+    with _desired_lock:
+        _desired_loops.discard(normalize_account(target_email))
     _persist_active_loops()
     return jsonify({"ok": True, "msg": "已停止"})
 
@@ -4972,6 +4995,7 @@ def api_stop():
 _rotate_audit_log()
 _cleanup_old_logs()
 _load_pending_tasks()
+_load_desired_loops()
 _load_stopped_accounts()
 _loop_account_settings = _load_settings_for_email(_active_credentials()[0])
 _bootstrap_admin_from_env()

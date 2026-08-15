@@ -1292,6 +1292,9 @@ class ServerSchedulingTests(unittest.TestCase):
             self.assertIn(
                 server.normalize_account("stop@example.com"),
                 server._stopped_accounts)
+            self.assertNotIn(
+                server.normalize_account("stop@example.com"),
+                server._desired_loops)
             with patch.object(server, "_rotate_run_log"), \
                  patch.object(server, "_broadcast_sse"), \
                  patch.object(server, "_append_log"), \
@@ -1303,9 +1306,14 @@ class ServerSchedulingTests(unittest.TestCase):
             self.assertNotIn(
                 server.normalize_account("stop@example.com"),
                 server._stopped_accounts)
+            self.assertIn(
+                server.normalize_account("stop@example.com"),
+                server._desired_loops)
             server._runs.pop(key, None)
             # 单次全量运行不解除停止，避免顺带恢复待办运营
             server._stopped_accounts.add(
+                server.normalize_account("stop@example.com"))
+            server._desired_loops.discard(
                 server.normalize_account("stop@example.com"))
             with patch.object(server, "_rotate_run_log"), \
                  patch.object(server, "_broadcast_sse"), \
@@ -1318,9 +1326,14 @@ class ServerSchedulingTests(unittest.TestCase):
             self.assertIn(
                 server.normalize_account("stop@example.com"),
                 server._stopped_accounts)
+            self.assertNotIn(
+                server.normalize_account("stop@example.com"),
+                server._desired_loops)
         finally:
             server._runs.pop(key, None)
             server._stopped_accounts.discard(
+                server.normalize_account("stop@example.com"))
+            server._desired_loops.discard(
                 server.normalize_account("stop@example.com"))
 
     def test_pending_task_aborts_when_account_stopped(self):
