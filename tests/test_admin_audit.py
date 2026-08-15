@@ -87,6 +87,17 @@ class AdminAuditTests(unittest.TestCase):
         finally:
             panel_store.delete_user(uid)
 
+    def test_admin_page_allowed_for_real_admin_while_impersonating(self):
+        admin = panel_store.get_user_by_username("tadmin")
+        with patch.object(server, "_real_user", return_value=admin), \
+             server.app.test_client() as client:
+            with client.session_transaction() as sess:
+                sess["impersonate_uid"] = 123
+            resp = client.get("/admin")
+        self.assertEqual(resp.status_code, 200)
+        with client.session_transaction() as sess:
+            self.assertNotIn("impersonate_uid", sess)
+
     def test_rotate_and_cleanup_old_logs(self):
         tmp = Path(tempfile.mkdtemp())
         audit = tmp / "admin_audit.log"

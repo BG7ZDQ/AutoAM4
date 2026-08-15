@@ -508,7 +508,13 @@ def _auth_gate():
     if user is not None:
         # 请求作用域数据路径 = 当前生效账号；后台线程没有 g，不受影响
         g.session_paths = _session_paths()
-        if path == "/admin" and not user.get("is_admin"):
+        if path == "/admin":
+            real = _real_user()
+            if real and real.get("is_admin"):
+                # 管理员访问管理面板：若正在模拟，自动退出模拟并直接进入
+                if session.get("impersonate_uid"):
+                    session.pop("impersonate_uid", None)
+                return None
             return render_template(
                 "denied.html", csrf_token=_session_csrf(),
                 username=user.get("username", ""),
