@@ -89,7 +89,8 @@ function loadUsers(){
   api('/api/admin/users').then(d=>{
     const box=document.getElementById('ub');
     if(!d.ok){ box.innerHTML='<div style="color:var(--t3)">加载失败</div>'; return; }
-    box.innerHTML = d.users.map(u=>{
+    const users=(d.users||[]).slice().sort((a,b)=>(b.is_admin?1:0)-(a.is_admin?1:0)||a.id-b.id);
+    box.innerHTML = users.map(u=>{
       const st=esc(u.status), role=u.is_admin?'管理员':'用户';
       let ops='';
       if(!u.is_admin){
