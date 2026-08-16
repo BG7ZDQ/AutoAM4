@@ -43,6 +43,7 @@
 - `/api/setup` 增加按 IP 限流，防止爆破初始化令牌或批量创建管理员
 - `deploy/install.sh` 加固：`.env` 与 systemd 单元改用 `printf` 逐行写入（杜绝密码/参数中的 `$(...)` 被二次求值）、校验安装路径/服务用户/端口/上限、修正临时目录归属、证书签发失败时回退 Secure Cookie 标记
 - 生产默认关闭模板自动重载（`AM4_DEBUG_TEMPLATES=1` 可开），新增 `AM4_SETUP_TOKEN`、`AM4_TRUST_PROXY`、`AM4_MAX_SSE_CLIENTS`、`AM4_DEBUG_TEMPLATES` 环境变量与部署示例
+- 对外错误响应脱敏：面板校验保留已知提示，其余异常只写服务器日志并返回通用文案，避免堆栈与内部路径泄露给外部用户
 
 ### 修复
 

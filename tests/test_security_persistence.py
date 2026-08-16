@@ -229,3 +229,15 @@ class SecurityAndPersistenceTests(unittest.TestCase):
         self.assertLess(template.index("window.st=function(t)"),
                         template.index("let SERVER_BOOTSTRAP=BOOT.dashboard_bootstrap||{}"))
 
+    def test_exception_messages_are_sanitized_for_clients(self):
+        self.assertEqual(
+            server._safe_validation_message(ValueError("用户名已存在")),
+            "用户名已存在")
+        self.assertEqual(
+            server._safe_validation_message(ValueError("internal secret path")),
+            "参数不合法，请检查输入")
+        message = server._safe_external_error(
+            "预估失败", RuntimeError("internal secret path"))
+        self.assertTrue(message.startswith("预估失败"))
+        self.assertNotIn("internal", message)
+

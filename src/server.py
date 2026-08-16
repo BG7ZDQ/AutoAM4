@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 from functools import wraps
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,6 +54,40 @@ BJT = timezone(timedelta(hours=8), name="Asia/Shanghai")  # 北京时间（UTC+8
 # 跨平台临时目录：Linux 下 TEMP 常未设置，不能用 Windows 路径兜底
 _TMP_ROOT = Path(tempfile.gettempdir())
 _TAKEOFF_READY_BUFFER_SECONDS = 120
+
+
+_SAFE_PANEL_ERROR_MESSAGES = {
+    "用户名头尾不能有空格": "用户名头尾不能有空格",
+    "用户名仅限 2~8 位字母/数字，可含空格、_、/": "用户名仅限 2~8 位字母/数字，可含空格、_、/",
+    "密码至少 6 个字符": "密码至少 6 个字符",
+    "该游戏账号已绑定其他网站账户": "该游戏账号已绑定其他网站账户",
+    "用户名已存在": "用户名已存在",
+    "用户不存在": "用户不存在",
+}
+
+
+def _safe_validation_message(exc: Exception,
+                             fallback: str = "参数不合法，请检查输入") -> str:
+    """面板校验错误：已知提示原样返回，未知异常只记服务器日志并给通用文案。"""
+    text = str(exc)
+    message = _SAFE_PANEL_ERROR_MESSAGES.get(text, fallback)
+    if message == fallback:
+        try:
+            print(f"[server] 参数校验异常已脱敏: {traceback.format_exc()}",
+                  file=sys.stderr)
+        except Exception:
+            pass
+    return message
+
+
+def _safe_external_error(prefix: str, exc: Exception) -> str:
+    """对外只返回通用错误，完整堆栈写入服务器 stderr 供排查。"""
+    try:
+        print(f"[server] {prefix} 异常已脱敏: {traceback.format_exc()}",
+              file=sys.stderr)
+    except Exception:
+        pass
+    return f"{prefix}，请稍后重试"
 
 
 def _now_bjt() -> datetime:
@@ -667,7 +702,7 @@ def api_register():
             am4_email=am4_email, am4_password=am4_password, settings=settings,
         )
     except ValueError as exc:
-        return jsonify({"ok": False, "msg": str(exc)}), 400
+        return jsonify({"ok": False, "msg": _safe_validation_message(exc)}), 400
     return jsonify({"ok": True, "msg": "注册成功，等待管理员审核后即可登录"})
 
 
@@ -773,7 +808,7 @@ def api_setup():
             username, password, is_admin=True, status="active",
         )
     except ValueError as exc:
-        return jsonify({"ok": False, "msg": str(exc)}), 400
+        return jsonify({"ok": False, "msg": _safe_validation_message(exc)}), 400
     return jsonify({"ok": True, "msg": "管理员创建成功，请登录"})
 
 
@@ -806,7 +841,7 @@ def api_admin_user_status(uid: int):
     try:
         panel_store.set_user_status(uid, status)
     except ValueError as exc:
-        return jsonify({"ok": False, "msg": str(exc)}), 400
+        return jsonify({"ok": False, "msg": _safe_validation_message(exc)}), 400
     if status != "active":
         # 停用即联动：立即停止该账号正在运行的循环；
         # 后续自动化由 _account_protected 的停用检查统一拒绝
@@ -835,7 +870,7 @@ def api_admin_user_password(uid: int):
     try:
         panel_store.set_user_password(uid, password)
     except ValueError as exc:
-        return jsonify({"ok": False, "msg": str(exc)}), 400
+        return jsonify({"ok": False, "msg": _safe_validation_message(exc)}), 400
     _audit("重置密码", target=target.get("username", ""), result="ok")
     return jsonify({"ok": True, "msg": "密码已重置"})
 
@@ -4059,7 +4094,8 @@ def api_route_estimate():
         est["dest"] = {"id": dest["id"], "name": dest["name"], "iata": dest.get("iata", "")}
         return jsonify(est)
     except Exception as e:
-        return jsonify({"ok": False, "error": f"预估失败: {e}"}), 500
+        return jsonify({"ok": False,
+                        "error": _safe_external_error("预估失败", e)}), 500
 
 
 @app.route("/api/route/candidates")
@@ -4107,7 +4143,8 @@ def api_route_candidates():
             "candidates": cands,
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": f"筛选失败: {e}"}), 500
+        return jsonify({"ok": False,
+                        "error": _safe_external_error("筛选失败", e)}), 500
 
 
 @app.route("/api/route/rank")
@@ -4151,7 +4188,8 @@ def api_route_rank():
             "results": results,
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": f"计算失败: {e}"}), 500
+        return jsonify({"ok": False,
+                        "error": _safe_external_error("计算失败", e)}), 500
 
 
 @app.route("/api/route/build", methods=["POST"])
@@ -4407,8 +4445,10 @@ def api_route_build():
             )
         return jsonify(result)
     except Exception as e:
-        _publish_log(f"❌ 建设 {ac_name} {reg} 异常终止：{e}")
-        return jsonify({"ok": False, "error": f"建设失败: {e}", "steps": []}), 500
+        _publish_log(f"❌ 建设 {ac_name} {reg} 异常终止")
+        return jsonify({"ok": False,
+                        "error": _safe_external_error("建设失败", e),
+                        "steps": []}), 500
 
 
 @app.route("/api/pending")
@@ -5181,7 +5221,8 @@ def _runner(run: dict) -> None:
                 _append_log(f"脚本进程已退出（code {rc}，{reason}）",
                             paths=run_paths)
     except Exception as e:
-        run["error"] = str(e)
+        _safe_external_error("循环进程", e)
+        run["error"] = "循环进程异常退出"
     finally:
         with _run_lock:
             run["mode"] = ""
