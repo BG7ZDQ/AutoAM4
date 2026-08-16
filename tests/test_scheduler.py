@@ -517,6 +517,8 @@ class ServerSchedulingTests(unittest.TestCase):
                           return_value=home_status) as home, \
              patch.object(server, "_schedule_takeoff") as schedule, \
              patch.object(server, "_mark_build") as mark_build, \
+             patch.object(server, "_sync_task_aircraft_identity",
+                          return_value=False), \
              patch.object(server, "_publish_log"), \
              patch.object(server.time, "time", return_value=1_000):
             server._run_pending_task(task)
@@ -543,6 +545,8 @@ class ServerSchedulingTests(unittest.TestCase):
         with patch.object(server, "_get_route_planner", return_value=planner), \
              patch.object(server, "_schedule_takeoff") as schedule, \
              patch.object(server, "_mark_build") as mark_build, \
+             patch.object(server, "_sync_task_aircraft_identity",
+                          return_value=False), \
              patch.object(server, "_publish_log"):
             server._run_pending_task(task)
         self.assertEqual(task["status"], "failed")
@@ -559,6 +563,8 @@ class ServerSchedulingTests(unittest.TestCase):
         with patch.object(server, "_get_route_planner") as get_planner, \
              patch.object(server, "_mark_build") as mark_build, \
              patch.object(server, "_schedule_takeoff") as schedule, \
+             patch.object(server, "_sync_task_aircraft_identity",
+                          return_value=False), \
              patch.object(server, "_publish_log"):
             server._run_pending_task(task)
         self.assertEqual(task["status"], "failed")
