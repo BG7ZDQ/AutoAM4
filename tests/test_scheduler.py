@@ -382,7 +382,7 @@ class ServerSchedulingTests(unittest.TestCase):
              patch.object(server.time, "time", return_value=1_300):
             server._run_pending_task(task)
         self.assertEqual(task["status"], "done")
-        set_duration.assert_called_once_with("NEW-1", 5_400)
+        set_duration.assert_called_once_with("NEW-1", 5_400, fid="fid-1")
         add_next.assert_called_once()
         self.assertEqual(add_next.call_args.args[3], 6_520)
         planner.takeoff_route.assert_not_called()
@@ -520,7 +520,8 @@ class ServerSchedulingTests(unittest.TestCase):
              patch.object(server, "_publish_log"), \
              patch.object(server.time, "time", return_value=1_000):
             server._run_pending_task(task)
-        home.assert_called_once_with(planner, "SAFE-1", force_refresh=True)
+        home.assert_called_once_with(
+            planner, "SAFE-1", fid="fid-1", force_refresh=True)
         planner._confirm_retrofit.assert_not_called()
         self.assertEqual(task["status"], "done")
         self.assertIsNone(task["error"])
@@ -632,7 +633,7 @@ class ServerSchedulingTests(unittest.TestCase):
     def test_required_retrofit_without_fid_never_schedules_takeoff(self):
         task = {
             "kind": "retrofit", "status": "running", "trigger_at": 0,
-            "params": {"fid": "", "route_id": "route-1", "reg": "SAFE-1",
+            "params": {"fid": "", "route_id": "route-1", "reg": "NOFID-1",
                        "retrofit": "all"},
         }
         with patch.object(server, "_load_builds", return_value=[]), \
@@ -642,7 +643,7 @@ class ServerSchedulingTests(unittest.TestCase):
             server._run_pending_task(task)
         self.assertEqual(task["status"], "failed")
         self.assertIn("缺少机队 ID", task["error"])
-        mark_build.assert_called_once_with("SAFE-1", status="retrofit_failed")
+        mark_build.assert_called_once_with("NOFID-1", status="retrofit_failed")
         schedule.assert_not_called()
 
     def test_failed_retrofit_blocks_daily_takeoff_discovery(self):

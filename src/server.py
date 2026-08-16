@@ -1455,20 +1455,18 @@ def _load_pending_tasks_impl(path: Path | None = None, owner: str | None = None)
                     _pending_seq = max(_pending_seq, int(m.group(1)))
         # 历史版本可能为同一飞机/航线累计多条起飞任务。成功起飞后应以
         # 最新预计落地时间为准，而不是让旧任务提前重复请求。
+        identity_rows = _read_csv(_paths()["fleet"])
+        for t in _pending_tasks:
+            if _sync_task_aircraft_identity(t, identity_rows):
+                fixed = True
         unique: dict[tuple, dict] = {}
         cleaned: list[dict] = []
         for t in _pending_tasks:
-            keys = {
-                "takeoff": ("route_id", "reg"),
-                "takeoff_reconcile": ("route_id", "reg"),
-                "retrofit": ("route_id", "reg"),
-                "delivery_continue": ("fid", "reg"),
-            }.get(t.get("kind"), ())
-            if not keys:
+            ident = (t.get("kind"),) + _aircraft_task_identity(
+                t.get("kind"), t.get("params") or {})
+            if len(ident) == 1:
                 cleaned.append(t)
                 continue
-            ident = (t.get("kind"),) + tuple(
-                str((t.get("params") or {}).get(k, "")) for k in keys)
             old = unique.get(ident)
             if old is None:
                 unique[ident] = t
@@ -1577,6 +1575,85 @@ def _ensure_marketing_tasks() -> None:
 _AIRCRAFT_OWNED_TASK_KINDS = {
     "takeoff", "takeoff_reconcile", "retrofit", "delivery_continue",
 }
+
+
+def _is_placeholder_aircraft_id(fid: str) -> bool:
+    """B- 前缀是购机流程尚未取得官网机队 ID 时的本地占位键。"""
+    return str(fid or "").strip().upper().startswith("B-")
+
+
+def _find_fleet_row(*, fid: str = "", reg: str = "") -> dict | None:
+    """按机队 ID 优先、注册号兜底定位机队行，避免更名后按旧注册号误判。"""
+    rows = _read_csv(_paths()["fleet"])
+    fid = str(fid or "").strip()
+    reg = str(reg or "").strip().upper()
+    if fid and not _is_placeholder_aircraft_id(fid):
+        for row in rows:
+            if str(row.get("飞机ID", "") or "").strip() == fid:
+                return row
+        # 已有明确 ID 时不再用注册号猜另一架飞机，防止更名/脏数据串号。
+        return None
+    if reg:
+        for row in rows:
+            if str(row.get("注册号", "") or "").strip().upper() == reg:
+                return row
+    return None
+
+
+def _aircraft_task_identity(kind: str, params: dict) -> tuple:
+    """飞机类待办的业务身份：有真实机队 ID 时以 ID 为准，否则退回注册号。"""
+    fid = str((params or {}).get("fid", "") or "").strip()
+    reg = str((params or {}).get("reg", "") or "").strip().upper()
+    route = str((params or {}).get("route_id", "") or "")
+    if kind in {"takeoff", "takeoff_reconcile", "retrofit"}:
+        return (fid or f"reg:{reg}", route)
+    if kind == "delivery_continue":
+        return (fid or f"reg:{reg}",)
+    if kind == "marketing":
+        return (str((params or {}).get("campaign", "") or ""),)
+    return ()
+
+
+def _sync_task_aircraft_identity(task: dict,
+                                 fleet_rows: list[dict] | None = None) -> bool:
+    """把待办里的 fid/注册号同步为机队最新值；更名后不再让新旧注册号并存。"""
+    if task.get("kind") not in _AIRCRAFT_OWNED_TASK_KINDS:
+        return False
+    params = task.get("params") or {}
+    fid = str(params.get("fid", "") or "").strip()
+    reg = str(params.get("reg", "") or "").strip()
+    rows = fleet_rows if fleet_rows is not None else _read_csv(_paths()["fleet"])
+    row = None
+    if fid and not _is_placeholder_aircraft_id(fid):
+        row = next((r for r in rows
+                    if str(r.get("飞机ID", "") or "").strip() == fid), None)
+    if row is None and not fid and reg:
+        target = reg.strip().upper()
+        row = next((r for r in rows
+                    if str(r.get("注册号", "") or "").strip().upper() == target), None)
+    if not row:
+        return False
+    live_fid = str(row.get("飞机ID", "") or "").strip()
+    live_reg = str(row.get("注册号", "") or "").strip()
+    changed = False
+    if live_fid and not _is_placeholder_aircraft_id(live_fid) and live_fid != fid:
+        params["fid"] = live_fid
+        fid = live_fid
+        changed = True
+    if live_reg:
+        old_upper = reg.strip().upper()
+        live_upper = live_reg.strip().upper()
+        if live_upper and live_upper != old_upper:
+            old_display = reg or old_upper
+            params["reg"] = live_reg
+            reg = live_reg
+            changed = True
+            title = str(task.get("title") or "")
+            if old_display and old_display in title:
+                task["title"] = title.replace(old_display, live_reg)
+    if changed:
+        task["params"] = params
+    return changed
 
 
 def _removed_aircraft_guard(task: dict) -> bool:
@@ -1745,49 +1822,49 @@ def _add_pending_task(kind: str, title: str, trigger_at: float, params: dict,
     with _pending_lock:
         queue = _tasks_by_account.setdefault(owner, [])
         # 玩家可能连续点击建设、刷新任务或重启服务；同一业务动作只保留一条。
-        identity_keys = {
-            "takeoff": ("route_id", "reg"),
-            "takeoff_reconcile": ("route_id", "reg"),
-            "retrofit": ("route_id", "reg"),
-            "delivery_continue": ("fid", "reg"),
-            "marketing": ("campaign",),
-        }.get(kind, ())
-        if identity_keys:
-            identity = tuple(str(params.get(k, "")) for k in identity_keys)
+        identity = (kind,) + _aircraft_task_identity(kind, params)
+        fleet_rows = (_read_csv(_paths()["fleet"])
+                      if kind in _AIRCRAFT_OWNED_TASK_KINDS else None)
+        if len(identity) > 1:
             for old in queue:
-                old_identity = tuple(str((old.get("params") or {}).get(k, ""))
-                                     for k in identity_keys)
-                if (old.get("kind") == kind and old.get("status") in ("pending", "running")
-                        and identity == old_identity):
-                    previous_trigger = float(old.get("trigger_at", trigger_at))
-                    if old.get("status") == "pending":
-                        if kind == "takeoff":
-                            old_params = old.get("params") or {}
-                            old_ready = float(old_params.get("ready_at", 0) or 0)
-                            new_ready = float(params.get("ready_at", 0) or 0)
-                            if old_ready > 0 and new_ready > 0 and old_ready > new_ready:
-                                # 落地、维护和改装是并列就绪约束；保留其中最晚者。
-                                trigger_at = max(float(old.get("trigger_at", trigger_at)), trigger_at)
-                                params = {**params, "ready_at": old_ready,
-                                          "reason": old_params.get("reason", params.get("reason", ""))}
-                                title = old.get("title", title)
-                            old["trigger_at"] = trigger_at
-                        else:
-                            old["trigger_at"] = min(
-                                float(old.get("trigger_at", trigger_at)), trigger_at)
-                        old["title"] = title
-                        old["params"] = params
-                        old["created_at"] = time.time()
-                        if kind == "takeoff" and params.get("reason") == "全量扫描发现":
-                            old.pop("retry", None)
-                            old["error"] = None
-                        _save_pending_tasks(owner=owner)
-                    result = dict(old)
-                    result["deduplicated"] = True
-                    result["trigger_changed"] = abs(
-                        float(old.get("trigger_at", previous_trigger)) - previous_trigger
-                    ) > 1
-                    return result
+                if (old.get("kind") != kind
+                        or old.get("status") not in ("pending", "running")):
+                    continue
+                if kind in _AIRCRAFT_OWNED_TASK_KINDS:
+                    _sync_task_aircraft_identity(old, fleet_rows)
+                old_identity = (kind,) + _aircraft_task_identity(
+                    kind, old.get("params") or {})
+                if identity != old_identity:
+                    continue
+                previous_trigger = float(old.get("trigger_at", trigger_at))
+                if old.get("status") == "pending":
+                    if kind == "takeoff":
+                        old_params = old.get("params") or {}
+                        old_ready = float(old_params.get("ready_at", 0) or 0)
+                        new_ready = float(params.get("ready_at", 0) or 0)
+                        if old_ready > 0 and new_ready > 0 and old_ready > new_ready:
+                            # 落地、维护和改装是并列就绪约束；保留其中最晚者。
+                            trigger_at = max(float(old.get("trigger_at", trigger_at)), trigger_at)
+                            params = {**params, "ready_at": old_ready,
+                                      "reason": old_params.get("reason", params.get("reason", ""))}
+                            title = old.get("title", title)
+                        old["trigger_at"] = trigger_at
+                    else:
+                        old["trigger_at"] = min(
+                            float(old.get("trigger_at", trigger_at)), trigger_at)
+                    old["title"] = title
+                    old["params"] = params
+                    old["created_at"] = time.time()
+                    if kind == "takeoff" and params.get("reason") == "全量扫描发现":
+                        old.pop("retry", None)
+                        old["error"] = None
+                    _save_pending_tasks(owner=owner)
+                result = dict(old)
+                result["deduplicated"] = True
+                result["trigger_changed"] = abs(
+                    float(old.get("trigger_at", previous_trigger)) - previous_trigger
+                ) > 1
+                return result
         _pending_seq += 1
         task = {
             "id": f"t{_pending_seq}",
@@ -1825,6 +1902,13 @@ def _add_takeoff_task(reg: str, route_id: str | None, cost_index: int,
                       trigger_at: float, title: str, jitter: float = 0.0,
                       fid: str = "", hub_id: str = "", ready_at: float = 0.0,
                       reason: str = "") -> dict:
+    old_reg = str(reg or "")
+    row = _find_fleet_row(fid=fid, reg=reg)
+    if row:
+        reg = str(row.get("注册号") or reg)
+        fid = str(row.get("飞机ID") or fid)
+        if old_reg and str(old_reg).upper() != str(reg).upper() and old_reg in title:
+            title = title.replace(old_reg, reg)
     return _add_pending_task(
         "takeoff", title, trigger_at,
         {"route_id": route_id, "reg": reg, "cost_index": int(cost_index),
@@ -1839,6 +1923,13 @@ def _add_retrofit_task(reg: str, route_id: str | None, cost_index: int,
                        fid: str = "", hub_id: str = "", retrofit: str | None = "all",
                        economy: str = "", business: str = "0", first: str = "0",
                        cargo_l: str = "", cargo_h: str = "") -> None:
+    old_reg = str(reg or "")
+    row = _find_fleet_row(fid=fid, reg=reg)
+    if row:
+        reg = str(row.get("注册号") or reg)
+        fid = str(row.get("飞机ID") or fid)
+        if old_reg and str(old_reg).upper() != str(reg).upper() and old_reg in title:
+            title = title.replace(old_reg, reg)
     _add_pending_task("retrofit", title, trigger_at,
                       {"route_id": route_id, "reg": reg, "cost_index": int(cost_index),
                        "fid": str(fid or ""), "hub_id": str(hub_id or ""),
@@ -1870,8 +1961,10 @@ def _create_retrofit_task(reg: str, route_id: str, cost_index: int,
         queue = _tasks_by_account.get(owner, [])
         changed = False
         for old in queue:
+            old_fid = str((old.get("params") or {}).get("fid", "") or "").strip()
             if (old.get("kind") == "retrofit"
-                    and str((old.get("params") or {}).get("reg", "")).upper() == str(reg).upper()
+                    and (str((old.get("params") or {}).get("reg", "")).upper() == str(reg).upper()
+                         or (fid and old_fid == str(fid)))
                     and old.get("status") == "failed"):
                 old["status"] = "superseded"
                 changed = True
@@ -1893,9 +1986,11 @@ def _arm_retrofit(reg: str, route_id: str, cost_index: int,
     with _pending_lock:
         queue = _tasks_by_account.get(owner, [])
         for t in queue:
+            t_fid = str((t.get("params") or {}).get("fid", "") or "").strip()
             if (t.get("kind") == "retrofit" and t.get("status") == "pending"
                     and not t.get("params", {}).get("route_id")
-                    and t.get("params", {}).get("reg") == reg):
+                    and (str(t.get("params", {}).get("reg", "")).upper() == str(reg).upper()
+                         or (fid and t_fid == str(fid)))):
                 t["params"]["route_id"] = route_id
                 t["params"]["cost_index"] = int(cost_index)
                 if fid:
@@ -1911,15 +2006,17 @@ def _arm_retrofit(reg: str, route_id: str, cost_index: int,
                           economy, business, first, cargo_l, cargo_h)
 
 
-def _fail_takeoff(reg: str, reason: str) -> None:
+def _fail_takeoff(reg: str, reason: str, fid: str = "") -> None:
     """建线失败：取消该飞机的预排起飞任务。"""
     owner = _task_owner_key()
     with _pending_lock:
         queue = _tasks_by_account.get(owner, [])
         for t in queue:
+            t_fid = str((t.get("params") or {}).get("fid", "") or "").strip()
             if (t.get("kind") == "takeoff" and t.get("status") == "pending"
                     and not t.get("params", {}).get("route_id")
-                    and t.get("params", {}).get("reg") == reg):
+                    and (str(t.get("params", {}).get("reg", "")).upper() == str(reg).upper()
+                         or (fid and t_fid == fid))):
                 t["status"] = "failed"
                 t["error"] = reason
                 _save_pending_tasks(owner=owner)
@@ -1935,12 +2032,18 @@ def _retrofit_mods(value) -> set[str]:
             if item.strip()}
 
 
-def _fleet_retrofit_satisfied(reg: str, retrofit) -> bool:
+def _fleet_retrofit_satisfied(reg: str, retrofit, fid: str = "") -> bool:
     wanted = _retrofit_mods(retrofit)
     if not wanted:
         return True
-    row = next((item for item in _read_csv(_paths()["fleet"])
-                if item.get("注册号", "").strip().upper() == str(reg).strip().upper()), None)
+    fid = str(fid or "").strip()
+    row = None
+    if fid and not _is_placeholder_aircraft_id(fid):
+        row = next((item for item in _read_csv(_paths()["fleet"])
+                    if str(item.get("飞机ID", "") or "").strip() == fid), None)
+    if row is None:
+        row = next((item for item in _read_csv(_paths()["fleet"])
+                    if item.get("注册号", "").strip().upper() == str(reg).strip().upper()), None)
     if not row:
         return False
     fields = {"co2": "CO2减排放", "speed": "飞行速度增加", "fuel": "耗油量减少"}
@@ -1949,32 +2052,43 @@ def _fleet_retrofit_satisfied(reg: str, retrofit) -> bool:
     return all(row.get(fields[mod]) == "已改装" for mod in wanted)
 
 
-def _retrofit_blocks_takeoff(reg: str) -> str | None:
+def _retrofit_blocks_takeoff(reg: str, fid: str = "") -> str | None:
     """要求的改装未成功时，阻止全量扫描绕过建设前置条件。"""
     target = str(reg or "").strip().upper()
+    target_fid = str(fid or "").strip()
     reconciled = False
     owner = _task_owner_key()
     with _pending_lock:
         queue = _tasks_by_account.get(owner, [])
         for task in queue:
             params = task.get("params") or {}
+            task_fid = str(params.get("fid", "") or "").strip()
             if (task.get("kind") == "retrofit"
-                    and str(params.get("reg", "")).strip().upper() == target
+                    and (str(params.get("reg", "")).strip().upper() == target
+                         or (target_fid and task_fid == target_fid))
                     and params.get("retrofit")):
                 if task.get("status") in {"pending", "running"}:
                     return "要求的改装尚未成功"
                 if task.get("status") == "failed":
-                    if not _fleet_retrofit_satisfied(reg, params.get("retrofit")):
+                    if not _fleet_retrofit_satisfied(
+                            reg, params.get("retrofit"), fid=target_fid or task_fid):
                         return "要求的改装尚未成功"
                     task["status"] = "done"
                     task["error"] = None
                     reconciled = True
     for build in _load_builds():
-        if (str(build.get("reg", "")).strip().upper() == target
+        build_fid = str(build.get("fid", "") or "").strip()
+        if ((str(build.get("reg", "")).strip().upper() == target
+                or (target_fid and build_fid == target_fid))
                 and build.get("status") == "retrofit_failed"):
-            if not _fleet_retrofit_satisfied(reg, build.get("retrofit", "all")):
+            if not _fleet_retrofit_satisfied(
+                    reg, build.get("retrofit", "all"), fid=target_fid or build_fid):
                 return "改装失败状态尚未解除"
-            _mark_build(reg, status="routed")
+            mark_fid = target_fid or build_fid
+            if mark_fid:
+                _mark_build(build.get("reg") or reg, fid=mark_fid, status="routed")
+            else:
+                _mark_build(build.get("reg") or reg, status="routed")
             reconciled = True
     if reconciled:
         with _pending_lock:
@@ -2090,6 +2204,9 @@ def _run_pending_task(task: dict) -> None:
     params = task.get("params") or {}
     if _removed_aircraft_guard(task):
         return
+    if kind in _AIRCRAFT_OWNED_TASK_KINDS:
+        _sync_task_aircraft_identity(task)
+        params = task.get("params") or {}
     rp = None
 
     def online_planner():
@@ -2148,7 +2265,8 @@ def _run_pending_task(task: dict) -> None:
 
         # 主页在飞机起飞后会给出预计落地时间；优先用它恢复首航时长，
         # 只需共享主页请求，不会误发第二次起飞。
-        latest = _latest_home_maintenance(planner, reg)
+        latest = _latest_home_maintenance(
+            planner, reg, fid=str(params.get("fid", "") or ""))
         if latest is None:
             _defer_online_failure(task, "takeoff_reconcile", f"无法确认 {reg} 的首航状态")
             return
@@ -2171,12 +2289,16 @@ def _run_pending_task(task: dict) -> None:
             _defer_online_failure(task, "takeoff_reconcile", f"{reg} 的首航时长尚未获取")
             return
 
-        _set_fleet_duration_if_missing(reg, duration)
+        _set_fleet_duration_if_missing(reg, duration,
+                                       fid=str(params.get("fid", "") or ""))
         final_row = _refresh_fleet_row(
             reg, str(params.get("fid", "")), str(params.get("hub_id", "")),
             finalize_build=True,
         )
         if final_row:
+            reg = str(final_row.get("注册号") or reg)
+            params["reg"] = reg
+            params["fid"] = str(final_row.get("飞机ID") or params.get("fid", ""))
             _mark_build(reg, status="done")
         _add_takeoff_task(
             reg, route_id, int(params.get("cost_index", 200)),
@@ -2272,7 +2394,8 @@ def _run_pending_task(task: dict) -> None:
                           cargo_h=params.get("cargo_h", ""))
             _mark_build(reg, status="routed", route_id=res["route_id"])
         else:
-            _fail_takeoff(reg, "建线未完成，起飞任务取消")
+            _fail_takeoff(reg, "建线未完成，起飞任务取消",
+                          fid=str(params.get("fid", "") or ""))
             _mark_build(reg, status="failed")
         task["status"] = "done"
         task["error"] = None
@@ -2334,7 +2457,8 @@ def _run_pending_task(task: dict) -> None:
             # 最新主页状态兜底，维护/改装尚未结束就继续顺延。
             if confirming or (not rf.get("ok") and rf.get("submitted")):
                 home_status = _latest_home_maintenance(
-                    planner, reg, force_refresh=True)
+                    planner, reg, fid=str(params.get("fid", "") or ""),
+                    force_refresh=True)
                 home_ready_at = _home_maintenance_ready_at(home_status)
                 if home_ready_at > time.time():
                     rf = {
@@ -2408,12 +2532,13 @@ def _run_pending_task(task: dict) -> None:
             return
         ci = int(params.get("cost_index", 200))
         reg = params.get("reg", "")
+        fid = str(params.get("fid", "") or "")
         if not _current_operation_settings().get("auto_takeoff", True):
             task["status"] = "cancelled"
             task["error"] = "自动起飞已关闭"
             _publish_log(f"🛫 自动起飞已关闭，取消 {reg} 的起飞待办")
             return
-        retrofit_block = _retrofit_blocks_takeoff(reg)
+        retrofit_block = _retrofit_blocks_takeoff(reg, fid=fid)
         if retrofit_block:
             task["status"] = "cancelled"
             task["error"] = retrofit_block
@@ -2435,7 +2560,7 @@ def _run_pending_task(task: dict) -> None:
             return
         # 每个待办只刷新本机详情，以最新需求决定是否起飞；不再依赖四小时全机队扫描。
         planner = online_planner()
-        latest_status = _latest_home_maintenance(planner, reg)
+        latest_status = _latest_home_maintenance(planner, reg, fid=fid)
         if latest_status is None:
             _defer_online_failure(task, "takeoff", f"起飞前无法确认 {reg} 的最新检修状态")
             return
@@ -2462,20 +2587,26 @@ def _run_pending_task(task: dict) -> None:
             task["error"] = None
             task["completed_at"] = time.time()
             task.pop("retry", None)
-            _broadcast_operation_status(reg, "grounded", fid=str(params.get("fid", "")))
+            _broadcast_operation_status(reg, "grounded", fid=fid)
             _publish_log(f"{reg} 已人工停飞，自动起飞待办已结束。")
             return
         refreshed = _refresh_fleet_row(
-            reg, str(params.get("fid", "")), str(params.get("hub_id", "")))
+            reg, fid, str(params.get("hub_id", "")))
         if _removed_aircraft_guard(task):
             return
         if not refreshed:
             _defer_online_failure(task, "takeoff", f"起飞前无法刷新 {reg} 的详情")
             return
+        if refreshed.get("注册号"):
+            reg = str(refreshed["注册号"])
+            params["reg"] = reg
+        if refreshed.get("飞机ID"):
+            fid = str(refreshed["飞机ID"])
+            params["fid"] = fid
         for key in ("距A-Check小时", "损坏率%"):
             if str(latest_status.get(key, "")).strip():
                 refreshed[key] = latest_status[key]
-        latest_maint_reason = _takeoff_maintenance_block(reg, row=refreshed)
+        latest_maint_reason = _takeoff_maintenance_block(reg, row=refreshed, fid=fid)
         if latest_maint_reason:
             task["status"] = "failed"
             task["error"] = f"检修保护：{latest_maint_reason}"
@@ -2528,6 +2659,10 @@ def _run_pending_task(task: dict) -> None:
             finalize_build=True,
         )
         if final_row:
+            reg = str(final_row.get("注册号") or reg)
+            fid = str(final_row.get("飞机ID") or fid)
+            params["reg"] = reg
+            params["fid"] = fid
             _mark_build(reg, status="operating")
         # 起飞前已经读取了最新详情；该时长是本次飞行从起飞到落地的单程时长。
         duration = _flight_duration_seconds((final_row or refreshed).get("飞行时长", ""))
@@ -2535,17 +2670,17 @@ def _run_pending_task(task: dict) -> None:
             # 接管后的每次成功起飞都继续排下一班，形成持续运营闭环。
             ready_at = time.time() + duration
             _broadcast_operation_status(
-                reg, "flying", ready_at, fid=str(params.get("fid", "")))
+                reg, "flying", ready_at, fid=fid)
             _add_takeoff_task(
                 reg, route_id, ci,
                 ready_at + _TAKEOFF_READY_BUFFER_SECONDS,
                 f"{reg} 下次起飞（航线 {route_id}）",
-                fid=params.get("fid", ""), hub_id=params.get("hub_id", ""),
+                fid=fid, hub_id=params.get("hub_id", ""),
                 jitter=0, ready_at=ready_at, reason="本次飞行落地",
             )
         else:
             _broadcast_operation_status(
-                reg, "flying", fid=str(params.get("fid", "")))
+                reg, "flying", fid=fid)
             # 新建航线在首航前可能暂时返回 00:00:00。使用独立的只读任务
             # 对账预计落地时间，避免重复起飞，并保证首航后运营链不断掉。
             _add_pending_task(
@@ -2762,12 +2897,20 @@ def _record_build(reg: str, aircraft: str, hub_id: str, origin_airport_id: str,
     with _builds_lock:
         builds = _load_builds()
         target_reg = str(reg).strip().upper()
-        found = next((b for b in builds
-                      if str(b.get("reg", "")).strip().upper() == target_reg), None)
+        target_fid = str(fid or "").strip()
+        found = None
+        if target_fid and not _is_placeholder_aircraft_id(target_fid):
+            found = next((b for b in builds
+                          if str(b.get("fid", "") or "").strip() == target_fid), None)
+        if found is None:
+            found = next((b for b in builds
+                          if str(b.get("reg", "")).strip().upper() == target_reg), None)
         now = time.time()
         if found is None:
             found = {"reg": reg, "created_at": now}
             builds.append(found)
+        elif found.get("reg") and str(found.get("reg", "")).upper() != target_reg:
+            found["reg"] = reg
         found.update({
             "aircraft": aircraft,
             "hub_id": hub_id,
@@ -2800,10 +2943,18 @@ def _mark_build(reg: str, **fields) -> None:
     with _builds_lock:
         builds = _load_builds()
         target_reg = str(reg).strip().upper()
-        found = next((b for b in builds
-                      if str(b.get("reg", "")).strip().upper() == target_reg), None)
+        target_fid = str(fields.get("fid", "") or "").strip()
+        found = None
+        if target_fid and not _is_placeholder_aircraft_id(target_fid):
+            found = next((b for b in builds
+                          if str(b.get("fid", "") or "").strip() == target_fid), None)
+        if found is None:
+            found = next((b for b in builds
+                          if str(b.get("reg", "")).strip().upper() == target_reg), None)
         if found is None:
             return
+        if found.get("reg") and str(found.get("reg", "")).upper() != target_reg:
+            found["reg"] = reg
         found.update(fields)
         found["updated_at"] = time.time()
         _save_builds(builds)
@@ -2904,12 +3055,17 @@ def _fleet_rows() -> list[dict]:
             rows.append(br)
     with _maint_cache_lock:
         statuses = _home_status_cache.get(_session_cache_key(), {})
+    status_by_fid = {
+        str(fid): item
+        for fid, item in statuses.items() if isinstance(item, dict)
+    }
     status_by_reg = {
         str(item.get("注册号", "")).strip().upper(): item
         for item in statuses.values() if isinstance(item, dict)
     }
     for row in rows:
-        status = status_by_reg.get(str(row.get("注册号", "")).strip().upper(), {})
+        status = (status_by_fid.get(str(row.get("飞机ID", "") or "").strip(), {})
+                  or status_by_reg.get(str(row.get("注册号", "")).strip().upper(), {}))
         _decorate_operation_state(row, status)
     return rows
 
@@ -3071,10 +3227,22 @@ def _merge_build_into_fleet(b: dict, *, building: bool = True) -> None:
     try:
         with exclusive_file_lock(fleet_path):
             rows = _read_csv(fleet_path)
-            idx = next((i for i, r in enumerate(rows)
-                        if r.get("注册号", "").upper() == row["注册号"].upper()), None)
+            target_fid = str(b.get("fid", "") or "").strip()
+            idx = None
+            if target_fid and not _is_placeholder_aircraft_id(target_fid):
+                idx = next((i for i, r in enumerate(rows)
+                            if str(r.get("飞机ID", "") or "").strip() == target_fid), None)
+            if idx is None:
+                for i, r in enumerate(rows):
+                    if r.get("注册号", "").upper() != row["注册号"].upper():
+                        continue
+                    idx = i
+                    if not _is_placeholder_aircraft_id(
+                            str(r.get("飞机ID", "") or "")):
+                        break
             if idx is None:
                 rows.append(row)
+                current = row
             else:
                 current = rows[idx]
                 # 建设上下文是用户选定的目标，优先于交付/改装期间详情页的临时值。
@@ -3091,15 +3259,9 @@ def _merge_build_into_fleet(b: dict, *, building: bool = True) -> None:
             # 旧版本可能同时留下 B-注册号占位行和真实机队行；以本次合并的
             # 记录为准，按注册号收敛为一行，避免机队总数虚增。
             target = row["注册号"].upper()
-            seen = False
-            deduped = []
-            for item in rows:
-                if str(item.get("注册号", "")).upper() != target:
-                    deduped.append(item)
-                elif not seen:
-                    deduped.append(item)
-                    seen = True
-            rows = deduped
+            rows = [item for item in rows
+                    if str(item.get("注册号", "")).upper() != target
+                    or item is current]
             _write_fleet_csv(rows, already_locked=True)
     except Exception as e:
         # 建设/起飞的在线写操作可能已经成功；本地展示合并失败不得反向把任务
@@ -3133,22 +3295,43 @@ def _clear_building_fleet_row(reg: str, *, remove_placeholder: bool = False) -> 
 def _refresh_fleet_row(reg: str, fid: str, hub_id: str, *,
                        finalize_build: bool = False) -> dict | None:
     """抓取一架飞机详情；建设期预检不覆盖主表，首航确认后才最终回填。"""
-    if not reg:
+    reg = str(reg or "").strip()
+    fid = str(fid or "").strip()
+    if _is_placeholder_aircraft_id(fid):
+        fid = ""
+    if not reg and not fid:
         return None
+
+    def find_index(rows: list[dict], fid: str, reg: str) -> int | None:
+        if fid and not _is_placeholder_aircraft_id(fid):
+            for i, row in enumerate(rows):
+                if str(row.get("飞机ID", "") or "").strip() == fid:
+                    return i
+        target = reg.upper()
+        for i, row in enumerate(rows):
+            if str(row.get("注册号", "") or "").strip().upper() != target:
+                continue
+            row_fid = str(row.get("飞机ID", "") or "").strip()
+            if (not row_fid or _is_placeholder_aircraft_id(row_fid)
+                    or row_fid == fid):
+                return i
+        return None
+
     try:
         import route_planner as _rp
         fleet_path = _paths()["fleet"]
         rows = _read_csv(fleet_path)
-        idx = next((i for i, row in enumerate(rows)
-                    if row.get("注册号", "").upper() == reg.upper()), None)
+        idx = find_index(rows, fid, reg)
         current = rows[idx] if idx is not None else None
         if not fid:
             # 旧任务未携带机队 ID 时，先从本地机队、再从建设记录补查。
-            if current:
+            if current and not _is_placeholder_aircraft_id(
+                    str(current.get("飞机ID", "") or "")):
                 fid = current.get("飞机ID", "")
         if not fid:
             for b in _load_builds():
-                if b.get("reg", "").upper() == reg.upper():
+                if (str(b.get("reg", "") or "").upper() == reg.upper()
+                        or (b.get("fid") and str(b.get("fid")) == fid)):
                     fid = b.get("fid", "")
                     hub_id = hub_id or b.get("hub_id", "")
                     break
@@ -3161,8 +3344,7 @@ def _refresh_fleet_row(reg: str, fid: str, hub_id: str, *,
         with exclusive_file_lock(fleet_path):
             # 网络请求期间采集进程可能已更新整表；锁内重新读取并只替换目标飞机。
             rows = _read_csv(fleet_path)
-            idx = next((i for i, row in enumerate(rows)
-                        if row.get("注册号", "").upper() == reg.upper()), None)
+            idx = find_index(rows, fid, reg)
             current = rows[idx] if idx is not None else current
             if current:
                 # 单机详情页不提供检修/改装状态；不得用空值或“未查询”覆盖主页和全量扫描结果。
@@ -3188,7 +3370,7 @@ def _refresh_fleet_row(reg: str, fid: str, hub_id: str, *,
         return None
 
 
-def _latest_home_maintenance(planner, reg: str,
+def _latest_home_maintenance(planner, reg: str, fid: str = "",
                              force_refresh: bool = False) -> dict | None:
     """读取共享的主页检修状态；改装提交后可强制补读一次最新“待定”时间。"""
     now = time.time()
@@ -3215,6 +3397,9 @@ def _latest_home_maintenance(planner, reg: str,
         _broadcast_operation_statuses(fresh, _session_account().get("email", ""))
         cached = fresh
     cached = cached or {}
+    fid = str(fid or "").strip()
+    if fid and not _is_placeholder_aircraft_id(fid) and fid in cached:
+        return cached[fid]
     target = str(reg or "").strip().upper()
     return next((status for status in cached.values()
                  if str(status.get("注册号", "")).strip().upper() == target), {})
@@ -3244,7 +3429,7 @@ def _flight_duration_seconds(value) -> int:
         return 0
 
 
-def _set_fleet_duration_if_missing(reg: str, seconds: int) -> None:
+def _set_fleet_duration_if_missing(reg: str, seconds: int, fid: str = "") -> None:
     """用首航预计落地时间补齐暂为 00:00:00 的本地航程时长。"""
     if seconds <= 0:
         return
@@ -3252,8 +3437,14 @@ def _set_fleet_duration_if_missing(reg: str, seconds: int) -> None:
     try:
         with exclusive_file_lock(fleet_path):
             rows = _read_csv(fleet_path)
-            row = next((item for item in rows
-                        if item.get("注册号", "").strip().upper() == reg.strip().upper()), None)
+            fid = str(fid or "").strip()
+            row = None
+            if fid and not _is_placeholder_aircraft_id(fid):
+                row = next((item for item in rows
+                            if str(item.get("飞机ID", "") or "").strip() == fid), None)
+            if row is None:
+                row = next((item for item in rows
+                            if item.get("注册号", "").strip().upper() == reg.strip().upper()), None)
             if not row or _flight_duration_seconds(row.get("飞行时长", "")) > 0:
                 return
             hours, remain = divmod(int(seconds), 3600)
@@ -3267,8 +3458,13 @@ def _set_fleet_duration_if_missing(reg: str, seconds: int) -> None:
 
 def _repair_legacy_doubled_takeoffs(tasks: list[dict], fleet: list[dict]) -> int:
     """把旧版按“飞行时长 × 2”生成的待办改回实际落地时间 + 2 分钟。"""
-    durations = {
-        str(row.get("注册号", "")).strip().upper():
+    durations_by_fid = {
+        str(row.get("飞机ID", "") or "").strip():
+            _flight_duration_seconds(row.get("飞行时长", ""))
+        for row in fleet
+    }
+    durations_by_reg = {
+        str(row.get("注册号", "") or "").strip().upper():
             _flight_duration_seconds(row.get("飞行时长", ""))
         for row in fleet
     }
@@ -3279,7 +3475,10 @@ def _repair_legacy_doubled_takeoffs(tasks: list[dict], fleet: list[dict]) -> int
                 or params.get("reason") != "往返完成"):
             continue
         reg = str(params.get("reg", "")).strip().upper()
-        duration = durations.get(reg, 0)
+        fid = str(params.get("fid", "") or "").strip()
+        duration = (durations_by_fid.get(fid, 0)
+                    if fid and not _is_placeholder_aircraft_id(fid)
+                    else durations_by_reg.get(reg, 0))
         created_at = float(task.get("created_at", 0) or 0)
         old_trigger = float(task.get("trigger_at", 0) or 0)
         if duration <= 0 or created_at <= 0:
@@ -3363,14 +3562,14 @@ def _current_balance() -> float | None:
         return None
 
 
-def _takeoff_maintenance_block(reg: str, row: dict | None = None) -> str | None:
+def _takeoff_maintenance_block(reg: str, row: dict | None = None,
+                               fid: str = "") -> str | None:
     """起飞前的玩家保护：A-Check过近或损坏过高时阻止自动起飞。"""
     min_a_hours = max(0.0, float(os.environ.get("AM4_MIN_A_CHECK_HOURS", "5")))
     max_wear = min(100.0, max(0.0, float(os.environ.get("AM4_MAX_WEAR_FOR_TAKEOFF", "80"))))
     try:
         if row is None:
-            row = next((r for r in _read_csv(_paths()["fleet"])
-                        if r.get("注册号", "").strip().upper() == reg.strip().upper()), None)
+            row = _find_fleet_row(fid=fid, reg=reg)
         if not row:
             return None
         a_raw, wear_raw = row.get("距A-Check小时", ""), row.get("损坏率%", "")
@@ -4774,10 +4973,16 @@ def _runner(run: dict) -> None:
                 try:
                     tk = json.loads(line[len("__TAKEOVER_TAKEOFF__"):].strip())
                     reg = tk.get("reg", "")
+                    fid = str(tk.get("fid", "") or "")
+                    row = _find_fleet_row(fid=fid, reg=reg)
+                    if row:
+                        reg = str(row.get("注册号") or reg)
+                        fid = str(row.get("飞机ID") or fid)
                     route_id = str(tk.get("route_id", ""))
                     trigger_at = float(tk.get("trigger_at", 0) or 0)
                     if route_id and trigger_at > time.time():
-                        retrofit_block = _retrofit_blocks_takeoff(reg)
+                        retrofit_block = _retrofit_blocks_takeoff(
+                            reg, fid=fid)
                         if retrofit_block:
                             _publish_log(
                                 f"🔧 {reg} 起飞待办已跳过：{retrofit_block}"
@@ -4793,7 +4998,7 @@ def _runner(run: dict) -> None:
                         scheduled = _add_takeoff_task(
                             reg, route_id, int(tk.get("cost_index", 200)), trigger_at,
                             title,
-                            fid=str(tk.get("fid", "")), jitter=0,
+                            fid=fid, jitter=0,
                             ready_at=float(tk.get("ready_at", 0) or 0),
                             reason=reason,
                         )

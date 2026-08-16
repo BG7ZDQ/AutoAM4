@@ -292,6 +292,21 @@ class RouteRecoveryTests(unittest.TestCase):
         self.assertTrue(repeated["deduplicated"])
         self.assertFalse(repeated["trigger_changed"])
 
+    def test_aircraft_rename_keeps_single_takeoff_task_by_fid(self):
+        with patch.object(server, "_save_pending_tasks"):
+            server._add_takeoff_task(
+                "A380-8-02", "route-1", 200, 620, "A380-8-02 下次起飞",
+                fid="18923431", reason="本次飞行落地",
+            )
+            repeated = server._add_takeoff_task(
+                "A380-8-2", "route-1", 200, 620, "A380-8-2 下次起飞",
+                fid="18923431", reason="本次飞行落地",
+            )
+        self.assertEqual(len(server._pending_tasks), 1)
+        self.assertTrue(repeated["deduplicated"])
+        self.assertEqual(server._pending_tasks[0]["params"]["reg"], "A380-8-2")
+        self.assertEqual(server._pending_tasks[0]["params"]["fid"], "18923431")
+
 
 if __name__ == "__main__":
     unittest.main()
