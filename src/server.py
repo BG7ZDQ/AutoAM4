@@ -3007,6 +3007,27 @@ def _hub_name_by_id(hub_id: str) -> str:
     return ""
 
 
+def _infer_hub_name(row: dict) -> str:
+    """按起降机场名称匹配枢纽列表；单机刷新缺少 hub_id 时用来补齐枢纽。"""
+    origin = str(row.get("起飞机场名称", "") or "")
+    dest = str(row.get("到达机场名称", "") or "")
+    if not origin and not dest:
+        return ""
+    try:
+        hubs = json.loads(_paths()["hubs"].read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    haystack = f"{origin} {dest}".lower()
+    for hub in hubs:
+        parts = str(hub.get("name", "") or "").split(", ")
+        if len(parts) < 2:
+            continue
+        city = parts[1].strip().lower()
+        if city and city in haystack:
+            return hub.get("name", "")
+    return ""
+
+
 def _build_to_fleet_rows() -> list[dict]:
     """把建设记录转成机队行（尚未进入机队 CSV 的新飞机/新航线，机队页可见）。"""
     label = {"ordered": "已下单", "delivering": "交付中", "waiting": "等待建线",
@@ -3067,6 +3088,10 @@ def _fleet_rows() -> list[dict]:
         status = (status_by_fid.get(str(row.get("飞机ID", "") or "").strip(), {})
                   or status_by_reg.get(str(row.get("注册号", "")).strip().upper(), {}))
         _decorate_operation_state(row, status)
+        if not str(row.get("枢纽分类", "") or "").strip():
+            inferred = _infer_hub_name(row)
+            if inferred:
+                row["枢纽分类"] = inferred
     return rows
 
 
@@ -3221,6 +3246,10 @@ def _merge_build_into_fleet(b: dict, *, building: bool = True) -> None:
         "客机组数量": "0" if is_cargo else "1",
         "最后更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if not str(row.get("枢纽分类", "") or "").strip():
+        inferred = _infer_hub_name(row)
+        if inferred:
+            row["枢纽分类"] = inferred
     fleet_path = _paths().get("fleet")
     if fleet_path is None:
         return
@@ -3337,10 +3366,16 @@ def _refresh_fleet_row(reg: str, fid: str, hub_id: str, *,
                     break
         if not fid:
             return None
-        hub_name = _hub_name_by_id(hub_id) or (current or {}).get("枢纽分类", "")
+        hub_name = (_hub_name_by_id(hub_id)
+                    or (current or {}).get("枢纽分类", "")
+                    or _infer_hub_name(current or {}))
         fr = _rp.fetch_aircraft_fleet_row(str(fid), hub_name, reg)
         if not fr:
             return None
+        if not str(fr.get("枢纽分类", "") or "").strip():
+            inferred = _infer_hub_name(fr)
+            if inferred:
+                fr["枢纽分类"] = inferred
         with exclusive_file_lock(fleet_path):
             # 网络请求期间采集进程可能已更新整表；锁内重新读取并只替换目标飞机。
             rows = _read_csv(fleet_path)

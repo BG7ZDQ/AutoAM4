@@ -930,6 +930,20 @@ class ServerSchedulingTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["飞机ID"], "fid-1")
 
+    def test_infer_hub_name_fills_missing_hub_from_origin(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            hubs = root / "hubs.json"
+            hubs.write_text(json.dumps([
+                {"hub_id": "hub-1", "name": "China, Shenzhen", "is_base": True},
+            ]), encoding="utf-8")
+            with patch.object(server, "_paths", return_value={"hubs": hubs}):
+                result = server._infer_hub_name({
+                    "起飞机场名称": "Shenzhen, China",
+                    "到达机场名称": "Karachi, Pakistan",
+                })
+        self.assertEqual(result, "China, Shenzhen")
+
     def test_marketing_tasks_are_persistent_and_deduplicated(self):
         server._pending_tasks[:] = []
         with patch.object(server, "_save_pending_tasks"):
