@@ -579,7 +579,7 @@ def parse_status_data(home_html: str) -> dict[str, dict]:
 
         def field(name: str, quoted: bool = False) -> str:
             pattern = (rf"\b{name}:\s*'([^']*)'" if quoted
-                       else rf"\b{name}:\s*([\d.]+)")
+                       else rf"\b{name}:\s*(-?[\d.]+)")
             found = re.search(pattern, block)
             return found.group(1) if found else ""
 
@@ -701,6 +701,8 @@ def _parse_active_marketing(page: str) -> dict[str, int]:
         plain = html.unescape(re.sub(r"<[^>]+>", " ", row))
         if "glyphicons-leaf" in row or "環保" in plain or "环保" in plain:
             active["eco"] = max(active.get("eco", 0), seconds)
+        elif "glyphicons-cargo" in row or "貨運聲譽" in plain or "货运声誉" in plain:
+            active["cargo"] = max(active.get("cargo", 0), seconds)
         elif "glyphicons-star" in row or "航空聲譽" in plain or "航空声誉" in plain:
             active["airline"] = max(active.get("airline", 0), seconds)
     return active
@@ -714,7 +716,7 @@ def _valid_marketing_page(page: str) -> bool:
             or re.search(r"(?:Bad Gateway|Service Unavailable|Gateway Timeout)", body, re.I)):
         return False
     return bool(re.search(
-        r"(?:marketing_new\.php|glyphicons-(?:star|leaf)|航空[聲声]譽|環保|环保|marketing)",
+        r"(?:marketing_new\.php|glyphicons-(?:star|leaf|cargo)|航空[聲声]譽|環保|环保|marketing)",
         body, re.I,
     ))
 
@@ -739,11 +741,15 @@ def _reconcile_removed_aircraft(existing: dict, live_ids: set[str], expected_tot
 
 
 def _purchase_marketing(state_key: str, label: str,
-                        known_inactive: bool = False) -> tuple[bool, str, int]:
+                        known_inactive: bool = False,
+                        cash_reserve: float = 5000000) -> tuple[bool, str, int]:
     """发送一次营销购买请求。写请求不自动重试，避免重复扣款。"""
     if state_key == "ad4_24h":
         url = f"{MARKETING_NEW}?type=1&c=4&mode=do&d=6"
         active_key = "airline"
+    elif state_key == "cargo4_24h":
+        url = f"{MARKETING_NEW}?type=2&c=4&mode=do&d=6"
+        active_key = "cargo"
     elif state_key in {"eco_00", "eco_12", "eco_12h"}:
         url = f"{MARKETING_NEW}?type=5&mode=do&c=1"
         active_key = "eco"
@@ -761,6 +767,11 @@ def _purchase_marketing(state_key: str, label: str,
                 hours, rem = divmod(remaining, 3600)
                 minutes = rem // 60
                 return False, f"{label}仍在进行（剩余 {hours}小时{minutes}分钟）", remaining
+        if active_key == "cargo":
+            from operation_automation import cargo_marketing_cost, check_cash
+            quote = fetch(f"{MARKETING_NEW}?type=2", referer=MARKETING)
+            cost = cargo_marketing_cost(quote)
+            check_cash(fetch(HOME, referer=MARKETING), cost, cash_reserve)
         lo, hi = _current_delay
         time.sleep(random.uniform(lo, hi))
         response = _do_curl(url, data=None, output=None, referer=MARKETING)

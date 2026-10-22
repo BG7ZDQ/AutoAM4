@@ -1573,7 +1573,8 @@ def _load_pending_tasks_impl(path: Path | None = None, owner: str | None = None)
             _pending_tasks = _tasks_by_account.setdefault(_active_account_key, [])
 
 
-def _save_pending_tasks(path: Path | None = None, owner: str | None = None) -> None:
+def _save_pending_tasks(path: Path | None = None, owner: str | None = None,
+                        strict: bool = False) -> None:
     owner_key = owner or _active_account_key
     try:
         with _pending_lock:
@@ -1582,6 +1583,8 @@ def _save_pending_tasks(path: Path | None = None, owner: str | None = None) -> N
             atomic_write_json(path or _paths()["pending"], queue)
     except Exception as e:
         _append_log(f"⚠ 待办任务保存失败，保留上一份完整文件：{e}")
+        if strict:
+            raise
     # 待办有变化即推 SSE，前端实时刷新清单与状态
     try:
         _broadcast_sse({"type": "pending"})
@@ -1603,9 +1606,8 @@ def _compact_takeoff_history(queue: list[dict], limit: int = 500) -> None:
 
 
 def _ensure_marketing_tasks() -> None:
-    """确保两种营销各有一个长期待办；首次执行会只读活动剩余时间。"""
-    if not _current_operation_settings().get("auto_marketing", True):
-        return
+    """各类营销独立开关；首次执行只读活动剩余时间。"""
+    settings = _current_operation_settings()
     now = time.time()
     owner = _task_owner_key()
     with _pending_lock:
@@ -1615,17 +1617,121 @@ def _ensure_marketing_tasks() -> None:
             for task in queue
             if task.get("kind") == "marketing" and task.get("status") in {"pending", "running"}
         }
-    if "airline" not in existing:
+    if settings.get("auto_marketing", True) and "airline" not in existing:
         _add_pending_task("marketing", "广告 4 自动续期（24 小时）", now + 15,
                           {"campaign": "airline"})
-    if "eco" not in existing:
+    if settings.get("auto_marketing", True) and "eco" not in existing:
         _add_pending_task("marketing", "环保营销自动续期（12 小时）", now + 30,
                           {"campaign": "eco"})
+    if settings.get("auto_cargo_marketing", False) and "cargo" not in existing:
+        _add_pending_task("marketing", "货运广告 4 自动续期（24 小时）", now + 45,
+                          {"campaign": "cargo"})
 
 
 _AIRCRAFT_OWNED_TASK_KINDS = {
-    "takeoff", "takeoff_reconcile", "retrofit", "delivery_continue",
+    "takeoff", "takeoff_reconcile", "retrofit", "delivery_continue", "maintenance",
 }
+
+
+def _maintenance_task_active(fid: str) -> bool:
+    with _pending_lock:
+        return any(t.get("kind") == "maintenance"
+                   and t.get("status") in {"pending", "running"}
+                   and str((t.get("params") or {}).get("fid", "")) == str(fid)
+                   for t in _tasks_by_account.get(_task_owner_key(), []))
+
+
+def _ensure_maintenance_tasks(status_map: dict) -> None:
+    """采集主页或起飞检查发现超限时登记；已有任务的提交记录不可覆盖。"""
+    from operation_automation import maintenance_action, number
+    settings = _current_operation_settings()
+    if not settings.get("auto_maintenance", False):
+        return
+    for fid, status in status_map.items():
+        if (not str(fid).isdigit() or not status.get("注册号")
+                or str(status.get("停飞", "0") or "0").lower() not in {"0", "false"}
+                or not maintenance_action(status, settings)):
+            continue
+        if _maintenance_task_active(str(fid)):
+            continue
+        # 飞行与已有维护均等待完成；执行时还会重新读取主页和报价。
+        ready_at = max(time.time() + 15,
+                       (number(status.get("预计落地时间戳")) or 0) + 120,
+                       (number(status.get("维护改装结束时间戳")) or 0) + 120)
+        _add_pending_task("maintenance", f"飞机 {status['注册号']} 自动检修维护", ready_at,
+                          {"fid": str(fid), "reg": status["注册号"]})
+
+
+def _run_maintenance_task(task: dict, online_planner) -> None:
+    from operation_automation import maintenance_action, maintenance_quote, check_cash, number
+    import collector as ext
+    settings = _current_operation_settings()
+    params = task["params"]
+    fid, reg = str(params.get("fid", "")), str(params.get("reg", ""))
+    if not settings.get("auto_maintenance", False):
+        task.update(status="cancelled", error="自动检修已关闭")
+        return
+    if not fid.isdigit():
+        task.update(status="failed", error="自动检修缺少真实飞机 ID")
+        return
+    try:
+        planner = online_planner()
+        latest = _latest_home_maintenance(planner, reg, fid=fid, force_refresh=True)
+        if not latest:
+            raise ValueError("主页未确认此飞机的最新状态")
+        if str(latest.get("停飞", "0") or "0").lower() not in {"0", "false"}:
+            task.update(status="cancelled", error="飞机已人工停飞，不执行自动检修或恢复起飞")
+            return
+        until = max(number(latest.get("维护改装结束时间戳")) or 0,
+                    number(latest.get("预计落地时间戳")) or 0)
+        if until > time.time():
+            task.update(status="pending", trigger_at=until + 120, error="等待飞行或维护结束")
+            return
+        if any(number(latest.get(k)) is None for k in ("距A-Check小时", "损坏率%")):
+            raise ValueError("检修小时或损坏率未知，未执行购买")
+        action = maintenance_action(latest, settings)
+        if action is None:
+            task.update(status="done", error=None, completed_at=time.time())
+            task.pop("retry", None)
+            route_id = str(latest.get("航线ID") or "")
+            if route_id and settings.get("auto_takeoff", True):
+                _add_takeoff_task(reg, route_id, int(settings.get("cost_index", 200)),
+                                  time.time() + 120, f"飞机 {reg} 检修完成后起飞",
+                                  fid=fid, reason="检修完成", jitter=0)
+            _publish_log(f"🔧 {reg} 检修状态已达标，完成自动检修待办")
+            return
+        if params.get("maintenance_submitted"):
+            # 包括进程在请求发出前后崩溃的模糊窗口。无业务幂等键时不猜测扣款结果。
+            raise ValueError("检修请求已记录，结果尚未确认；仅查询，不重复扣款")
+        row = _find_fleet_row(fid=fid)
+        if not row or row.get("建设状态") or _retrofit_blocks_takeoff(reg, fid=fid):
+            raise ValueError("等待飞机交付和改装完成")
+        preview = ext.fetch(f"{ext.BASE}/maint_plan_do.php?type={action}&id={fid}", referer=ext.MAINT_PLAN)
+        quote = maintenance_quote(preview, fid, action)
+        home = ext.fetch(ext.HOME, referer=ext.MAINT_PLAN)
+        fresh = ext.parse_status_data(home).get(fid)
+        if (not fresh or maintenance_action(fresh, settings) != action
+                or str(fresh.get("停飞", "0") or "0").lower() not in {"0", "false"}
+                or (number(fresh.get("维护改装结束时间戳")) or 0) > time.time()
+                or (number(fresh.get("预计落地时间戳")) or 0) > time.time()):
+            raise ValueError("检修前状态发生变化，稍后重新确认")
+        check_cash(home, quote["cost"], float(settings.get("cash_reserve", 5000000)))
+        if _account_manually_stopped(_session_account().get("email", "")):
+            raise ValueError("循环已停止，未执行检修")
+        params["maintenance_submitted"] = {"action": action, "cost": quote["cost"], "at": time.time()}
+        try:
+            _save_pending_tasks(owner=task["account"], strict=True)
+        except Exception:
+            params.pop("maintenance_submitted", None)
+            raise
+        # 不使用带重试的 fetch；写请求最多一次，任何异常均保留持久化提交标记。
+        ext._do_curl(f"{ext.BASE}/{quote['path']}", data=None, output=None, referer=ext.MAINT_PLAN)
+        task.update(status="pending", trigger_at=time.time() + 60,
+                    error="检修请求已发送，等待官网确认")
+        _refresh_market_after_spend()
+        _publish_log(f"🔧 {reg} 已提交{'A-Check' if action == 'check' else '维修'}，报价 ${quote['cost']:,.0f}")
+    except Exception as exc:
+        _defer_online_failure(task, "maintenance", str(exc))
 
 
 def _is_placeholder_aircraft_id(fid: str) -> bool:
@@ -1658,7 +1764,7 @@ def _aircraft_task_identity(kind: str, params: dict) -> tuple:
     route = str((params or {}).get("route_id", "") or "")
     if kind in {"takeoff", "takeoff_reconcile", "retrofit"}:
         return (fid or f"reg:{reg}", route)
-    if kind == "delivery_continue":
+    if kind in {"delivery_continue", "maintenance"}:
         return (fid or f"reg:{reg}",)
     if kind == "marketing":
         return (str((params or {}).get("campaign", "") or ""),)
@@ -1920,7 +2026,7 @@ def _add_pending_task(kind: str, title: str, trigger_at: float, params: dict,
                     old.pop("retry", None)
                     old.pop("completed_at", None)
                     _save_pending_tasks(owner=owner)
-                elif old.get("status") == "pending":
+                elif old.get("status") == "pending" and kind != "maintenance":
                     if kind == "takeoff":
                         old_params = old.get("params") or {}
                         old_ready = float(old_params.get("ready_at", 0) or 0)
@@ -2232,7 +2338,7 @@ def _defer_online_failure(task: dict, category: str, message: str) -> bool:
     attempts = state["attempts"]
     delays = (300, 900, 1800)
     if attempts > len(delays):
-        if task.get("kind") in {"delivery_continue", "retrofit", "marketing"}:
+        if task.get("kind") in {"delivery_continue", "retrofit", "marketing", "maintenance"}:
             delay = 6 * 3600
             task["trigger_at"] = time.time() + delay
             task["status"] = "pending"
@@ -2333,15 +2439,23 @@ def _run_pending_task(task: dict) -> None:
             rp = _get_route_planner(require_login=True)
         return rp
 
+    if kind == "maintenance":
+        _run_maintenance_task(task, online_planner)
+        return
+
     if kind == "marketing":
         campaign = str(params.get("campaign", ""))
-        if campaign not in {"airline", "eco"}:
+        if campaign not in {"airline", "eco", "cargo"}:
             task["status"] = "failed"
             task["error"] = f"未知营销类型：{campaign or '空'}"
             return
-        state_key = "ad4_24h" if campaign == "airline" else "eco_12h"
-        label = "广告 4（24 小时）" if campaign == "airline" else "环保营销（12 小时）"
-        if not _current_operation_settings().get("auto_marketing", True):
+        state_key = {"airline": "ad4_24h", "eco": "eco_12h", "cargo": "cargo4_24h"}[campaign]
+        label = {"airline": "广告 4（24 小时）", "eco": "环保营销（12 小时）",
+                 "cargo": "货运广告 4（24 小时）"}[campaign]
+        settings = _current_operation_settings()
+        enabled = (settings.get("auto_cargo_marketing", False) if campaign == "cargo"
+                   else settings.get("auto_marketing", True))
+        if not enabled:
             task["status"] = "cancelled"
             task["error"] = "自动营销已关闭"
             _publish_log(f"📣 自动营销已关闭，跳过 {label} 续期")
@@ -2359,14 +2473,16 @@ def _run_pending_task(task: dict) -> None:
             task["error"] = None
             task.pop("retry", None)
             return
-        ok, message, renewed = ext._purchase_marketing(state_key, label, known_inactive=True)
+        kwargs = ({"cash_reserve": float(settings.get("cash_reserve", 5000000))}
+                  if campaign == "cargo" else {})
+        ok, message, renewed = ext._purchase_marketing(state_key, label, known_inactive=True, **kwargs)
         if not ok:
             message = re.sub(rf"^\s*{re.escape(label)}\s*[：:]?\s*", "", str(message or ""))
             _defer_online_failure(task, "marketing", message or "购买结果暂未确认")
             return
         _refresh_market_after_spend()
         _publish_log(f"📣 {label}购买成功，已按活动到期时间安排下次续期")
-        task["trigger_at"] = time.time() + max(300, renewed or (86400 if campaign == "airline" else 43200)) + 60
+        task["trigger_at"] = time.time() + max(300, renewed or (43200 if campaign == "eco" else 86400)) + 60
         task["status"] = "pending"
         task["error"] = None
         task.pop("retry", None)
@@ -2726,12 +2842,23 @@ def _run_pending_task(task: dict) -> None:
                 refreshed[key] = latest_status[key]
         latest_maint_reason = _takeoff_maintenance_block(reg, row=refreshed, fid=fid)
         if latest_maint_reason:
+            if _current_operation_settings().get("auto_maintenance", False):
+                _ensure_maintenance_tasks({fid: {**latest_status, "注册号": reg}})
+                task["status"] = "pending"
+                task["trigger_at"] = time.time() + 300
+                task["error"] = f"等待自动检修：{latest_maint_reason}"
+                return
             task["status"] = "failed"
             task["error"] = f"检修保护：{latest_maint_reason}"
             _publish_log(
                 f"🛡️ 检修保护：已终止 {reg}（航线 {route_id}）的起飞安排\n"
                 f" {latest_maint_reason}"
             )
+            return
+        if _maintenance_task_active(fid):
+            task["status"] = "pending"
+            task["trigger_at"] = time.time() + 300
+            task["error"] = "等待自动检修完成确认"
             return
         demand_status = str(refreshed.get("需求状态", "")).strip()
         if demand_status not in {"旺盛", "不足"}:
@@ -3722,8 +3849,9 @@ def _current_balance() -> float | None:
 def _takeoff_maintenance_block(reg: str, row: dict | None = None,
                                fid: str = "") -> str | None:
     """起飞前的玩家保护：A-Check过近或损坏过高时阻止自动起飞。"""
-    min_a_hours = max(0.0, float(os.environ.get("AM4_MIN_A_CHECK_HOURS", "5")))
-    max_wear = min(100.0, max(0.0, float(os.environ.get("AM4_MAX_WEAR_FOR_TAKEOFF", "80"))))
+    settings = _current_operation_settings()
+    min_a_hours = max(0.0, float(settings.get("min_a_check_hours", os.environ.get("AM4_MIN_A_CHECK_HOURS", "5"))))
+    max_wear = min(100.0, max(0.0, float(settings.get("max_wear_for_takeoff", os.environ.get("AM4_MAX_WEAR_FOR_TAKEOFF", "80")))))
     try:
         if row is None:
             row = _find_fleet_row(fid=fid, reg=reg)
@@ -4566,7 +4694,7 @@ def api_pending():
         "status": t.get("status"),
         "error": t.get("error"),
         "route_id": str((t.get("params") or {}).get("route_id", "")),
-        "route_required": t.get("kind") in _AIRCRAFT_OWNED_TASK_KINDS,
+        "route_required": t.get("kind") in (_AIRCRAFT_OWNED_TASK_KINDS - {"maintenance"}),
         "route_ready": bool(t.get("params", {}).get("route_id")),
         "trigger_at": t.get("trigger_at"),
         "remaining": max(0, int(t.get("trigger_at", now) - now)),
@@ -5117,6 +5245,7 @@ def _runner(run: dict) -> None:
                             _home_status_cache[key] = status_map
                             _home_status_ts[key] = time.time()
                         _broadcast_operation_statuses(status_map, email)
+                        _ensure_maintenance_tasks(status_map)
                     continue
                 except Exception:
                     pass

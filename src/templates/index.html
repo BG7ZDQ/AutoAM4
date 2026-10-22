@@ -197,11 +197,14 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid 
 <div><label class="set-label">允许起飞最高损坏率（%）</label><input class="set-in" id="setMaxWear" type="number" min="0" max="100"></div>
 </div>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-top:16px">
-<label class="set-toggle"><input type="checkbox" id="setAutoMkt"><span>自动营销续期</span></label>
+<label class="set-toggle"><input type="checkbox" id="setAutoMkt"><span>客运 / 环保营销续期</span></label>
+<label class="set-toggle"><input type="checkbox" id="setAutoCargoMkt"><span>货运营销续期（最高档 24 小时）</span></label>
+<label class="set-toggle"><input type="checkbox" id="setAutoMaint"><span>自动检修维护</span></label>
 <label class="set-toggle"><input type="checkbox" id="setAutoFuel"><span>自动燃油采购</span></label>
 <label class="set-toggle"><input type="checkbox" id="setAutoCo2"><span>自动 CO₂ 采购</span></label>
 <label class="set-toggle"><input type="checkbox" id="setAutoTakeoff"><span>自动起飞</span></label>
 </div>
+<div style="margin-top:10px;font-size:.75rem;color:var(--t3)">自动检修使用上方 A-Check 和损坏率阈值，落地后安排，人工停飞的飞机跳过。检修和货运营销购买前均保留现金安全垫。</div>
 <div style="margin-top:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
 <button class="btn btn-primary" onclick="saveSettings()">💾 保存设置</button>
 <span id="setMsg" style="font-size:.85rem;color:var(--t3)"></span>
@@ -660,6 +663,8 @@ function loadSettings(){
     setVal('setFuelBelow',s.fuel_buy_below);setVal('setCo2Below',s.co2_buy_below);
     setVal('setMinA',s.min_a_check_hours);setVal('setMaxWear',s.max_wear_for_takeoff);
     document.getElementById('setAutoMkt').checked=!!s.auto_marketing;
+    document.getElementById('setAutoCargoMkt').checked=!!s.auto_cargo_marketing;
+    document.getElementById('setAutoMaint').checked=!!s.auto_maintenance;
     document.getElementById('setAutoFuel').checked=!!s.auto_buy_fuel;
     document.getElementById('setAutoCo2').checked=!!s.auto_buy_co2;
     document.getElementById('setAutoTakeoff').checked=!!s.auto_takeoff;
@@ -677,6 +682,8 @@ function saveSettings(){
     min_a_check_hours:+document.getElementById('setMinA').value||0,
     max_wear_for_takeoff:+document.getElementById('setMaxWear').value||0,
     auto_marketing:document.getElementById('setAutoMkt').checked,
+    auto_cargo_marketing:document.getElementById('setAutoCargoMkt').checked,
+    auto_maintenance:document.getElementById('setAutoMaint').checked,
     auto_buy_fuel:document.getElementById('setAutoFuel').checked,
     auto_buy_co2:document.getElementById('setAutoCo2').checked,
     auto_takeoff:document.getElementById('setAutoTakeoff').checked

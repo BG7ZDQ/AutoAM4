@@ -30,6 +30,8 @@ DEFAULT_SETTINGS: dict = {
     "max_wear_for_takeoff": 80,
     # 操作开关
     "auto_marketing": True,
+    "auto_cargo_marketing": False,
+    "auto_maintenance": False,
     "auto_buy_fuel": True,
     "auto_buy_co2": True,
     "auto_takeoff": True,
@@ -50,6 +52,8 @@ _USERNAME_RE = re.compile(r"^[A-Za-z0-9 _/]{2,8}$")
 
 _AUTO_ENV_MAP: dict[str, str] = {
     "auto_marketing": "AM4_AUTO_MARKETING",
+    "auto_cargo_marketing": "AM4_AUTO_CARGO_MARKETING",
+    "auto_maintenance": "AM4_AUTO_MAINTENANCE",
     "auto_buy_fuel": "AM4_AUTO_BUY_FUEL",
     "auto_buy_co2": "AM4_AUTO_BUY_CO2",
     "auto_takeoff": "AM4_AUTO_TAKEOFF",
