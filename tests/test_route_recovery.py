@@ -292,6 +292,61 @@ class RouteRecoveryTests(unittest.TestCase):
         self.assertTrue(repeated["deduplicated"])
         self.assertFalse(repeated["trigger_changed"])
 
+    def test_maintenance_takeover_revives_failed_protection_task(self):
+        server._pending_tasks.append({
+            "id": "t1", "kind": "takeoff", "status": "failed",
+            "created_at": 400, "trigger_at": 500,
+            "title": "SAFE-1 下次起飞",
+            "params": {
+                "reg": "SAFE-1", "fid": "fid-1", "route_id": "route-1",
+                "cost_index": 200, "ready_at": 400, "reason": "本次飞行落地",
+            },
+            "error": "检修保护：距A-Check仅 4 小时（保护阈值 5 小时）",
+        })
+        with patch.object(server, "_save_pending_tasks") as save:
+            result = server._add_takeoff_task(
+                "SAFE-1", "route-1", 200, 720, "维护完成后起飞",
+                fid="fid-1", ready_at=600, reason="维护/改装完成",
+            )
+        self.assertEqual(len(server._pending_tasks), 1)
+        task = server._pending_tasks[0]
+        self.assertEqual(task["id"], "t1")
+        self.assertEqual(task["status"], "pending")
+        self.assertIsNone(task["error"])
+        self.assertEqual(task["trigger_at"], 720)
+        self.assertEqual(task["params"]["reason"], "维护/改装完成")
+        self.assertTrue(result["deduplicated"])
+        self.assertTrue(result["trigger_changed"])
+        save.assert_called_once()
+
+    def test_maintenance_takeover_supersedes_failed_duplicate(self):
+        failed = {
+            "id": "t1", "kind": "takeoff", "status": "failed",
+            "trigger_at": 500, "params": {
+                "reg": "SAFE-1", "fid": "fid-1", "route_id": "route-1",
+            },
+            "error": "检修保护：距A-Check仅 4 小时（保护阈值 5 小时）",
+        }
+        pending = {
+            "id": "t2", "kind": "takeoff", "status": "pending",
+            "trigger_at": 620, "params": {
+                "reg": "SAFE-1", "fid": "fid-1", "route_id": "route-1",
+                "ready_at": 500, "reason": "维护/改装完成",
+            },
+            "error": None,
+        }
+        server._pending_tasks.extend([failed, pending])
+        with patch.object(server, "_save_pending_tasks"):
+            result = server._add_takeoff_task(
+                "SAFE-1", "route-1", 200, 720, "维护完成后起飞",
+                fid="fid-1", ready_at=600, reason="维护/改装完成",
+            )
+        self.assertEqual(failed["status"], "superseded")
+        self.assertIsNone(failed["error"])
+        self.assertEqual(pending["status"], "pending")
+        self.assertEqual(pending["trigger_at"], 720)
+        self.assertTrue(result["deduplicated"])
+
     def test_aircraft_rename_keeps_single_takeoff_task_by_fid(self):
         with patch.object(server, "_save_pending_tasks"):
             server._add_takeoff_task(

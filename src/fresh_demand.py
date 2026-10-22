@@ -71,7 +71,7 @@ def enqueue_strong_demand(rows: list[dict],
         else:
             trigger_at = now + TAKEOFF_READY_BUFFER_SECONDS
             reason = "全量扫描发现"
-            print(f"{reg} 已登记起飞，{TAKEOFF_READY_BUFFER_SECONDS // 60} 分钟后检查", flush=True)
+            print(f"{reg} 提交起飞登记，计划 {TAKEOFF_READY_BUFFER_SECONDS // 60} 分钟后检查", flush=True)
 
         payload = json.dumps({
             "fid": aircraft_id,

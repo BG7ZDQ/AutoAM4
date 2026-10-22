@@ -21,13 +21,12 @@ import math
 import re
 import struct
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from urllib.parse import quote, urlencode
 
 from collector import (
-    BASE, HOME, _do_curl, _ensure_login, classify_takeoff_response, parse_status_data,
+    BASE, HOME, _do_curl, _ensure_login, _now_bjt, classify_takeoff_response, parse_status_data,
 )
 
 try:
@@ -1306,7 +1305,7 @@ def fetch_aircraft_fleet_row(fid: str, hub_name: str = "", reg: str = "") -> dic
             "需求状态": d.get("demand_status", ""),
             "组类型": str(ac.get("id", "")) if ac else "",
             "客机组数量": "0" if is_cargo else "1",
-            "最后更新时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "最后更新时间": _now_bjt().strftime("%Y-%m-%d %H:%M:%S"),
         }
     except Exception:
         return None
