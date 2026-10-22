@@ -193,3 +193,27 @@ class AutomaticOperationsTests(unittest.TestCase):
             server._ensure_marketing_tasks()
         add.assert_called_once()
         self.assertEqual(add.call_args.args[3], {"campaign": "cargo"})
+
+    def test_long_running_collector_registers_cargo_before_starting_process(self):
+        email = "cargo-start@example.invalid"
+        owner = account_storage.account_key(email)
+        queues, observed = {}, []
+        old_account = getattr(server._task_account_ctx, "account", None)
+        old_paths = getattr(server._task_account_ctx, "paths", None)
+        self.addCleanup(setattr, server._task_account_ctx, "account", old_account)
+        self.addCleanup(setattr, server._task_account_ctx, "paths", old_paths)
+        run = {"account_email": email, "account_key": owner, "mode": "loop_resume",
+               "settings": {"auto_marketing": False, "auto_cargo_marketing": True},
+               "paths": {"fleet": Path("unused"), "maint": Path("unused")}}
+        def start(*args, **kwargs):
+            observed.extend((t["account"], t["params"]["campaign"])
+                            for t in queues.get(owner, []))
+            raise RuntimeError("test ends after startup")
+        with patch.object(server, "_tasks_by_account", queues), \
+             patch.object(server, "_save_pending_tasks"), \
+             patch.object(server, "_read_csv", return_value=[]), \
+             patch.object(server, "_safe_external_error"), \
+             patch.object(server, "_broadcast_sse"), \
+             patch.object(server.subprocess, "Popen", side_effect=start):
+            server._runner(run)
+        self.assertEqual(observed, [(owner, "cargo")])

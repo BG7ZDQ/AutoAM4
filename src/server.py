@@ -5098,6 +5098,8 @@ def _runner(run: dict) -> None:
     _task_account_ctx.paths = run_paths
     seen_aircraft_ids: set[str] = set()
     try:
+        # 常驻循环不会正常退出；必须在启动时用本线程的账号设置登记续期任务。
+        _ensure_marketing_tasks()
         script = str(Path(__file__).resolve().parent / "collector.py")
         args = [sys.executable, "-u", script]
         if run["mode"] in {"loop", "loop_resume"}:
@@ -5418,8 +5420,6 @@ def _runner(run: dict) -> None:
                 "account": email,
             })
             run["running"] = False
-        # 营销任务必须归属本账号：在清空线程账号上下文之前补齐
-        _ensure_marketing_tasks()
         _task_account_ctx.paths = None
         _task_account_ctx.account = None
 
