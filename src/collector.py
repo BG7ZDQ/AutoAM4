@@ -128,7 +128,7 @@ _SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 # 飞机结束飞行、维护或改装后，等待游戏状态完成切换再尝试起飞。
 TAKEOFF_READY_BUFFER_SECONDS = 120
-DAILY_FULL_HOUR_BJT = 6       # 游戏需求日切对应北京时间 06:00
+DAILY_FULL_HOUR_BJT = 6       # 固定全量采集时间；不足结果在本轮重新读取两次
 
 _LEGACY_FLEET_CSV = OUT / "fleet_complete.csv"
 FLEET_CSV = OUT / "fleet.csv"
@@ -527,6 +527,29 @@ def parse_aircraft_detail(detail_html: str):
         "cargo_large_cap": cargo_large_cap,
         "cargo_heavy_cap": cargo_heavy_cap,
     }
+
+
+def fetch_detail_with_demand_retries(url: str, *, referer: str, label: str) -> dict | None:
+    """全量核查：初读不足才再读两次；三次确认不足后才落盘，不创建周期待办。"""
+    page = fetch(url, referer=referer, label=label)
+    if not page.strip():
+        return None
+    detail = parse_aircraft_detail(page)
+    if detail["demand_status"] != "不足":
+        return detail
+    confirmed = 1
+    for attempt in range(1, 3):
+        # fetch 已有请求间隔与网络重试；此处的两次是业务层重新读取需求。
+        fresh = parse_aircraft_detail(fetch(
+            url, referer=referer, label=f"{label}：需求不足，复核 {attempt}/2"))
+        if fresh["demand_status"] == "旺盛":
+            return fresh
+        if fresh["demand_status"] == "不足":
+            confirmed += 1
+            detail = fresh
+    if confirmed != 3:
+        detail["demand_status"] = ""
+    return detail
 
 
 # ---------------------------------------------------------------------------
@@ -1302,15 +1325,14 @@ def run_once(takeoff: bool = False):
             ac_id = entry["aircraft_id"]
             live_aircraft_ids.add(ac_id)
             reg = entry["reg"]
-            detail_html = fetch(
+            detail = fetch_detail_with_demand_retries(
                 f"{BASE}/fleet_details.php?id={ac_id}&returnType={entry['return_type']}",
                 referer=f"{BASE}/fleet.php?type={group['type_id']}",
                 label=f"正在查询 {reg} [{detail_count}/{total_aircraft}]",
             )
-            if not detail_html.strip():
+            if not detail:
                 print(f"⚠ {reg} 信息获取失败，跳过", flush=True)
                 continue
-            detail = parse_aircraft_detail(detail_html)
             hub = classify_hub_with(hubs, detail["origin_name"], detail["destination_name"])
             old_row = existing_fleet.get(ac_id, {})
             row = {
@@ -1529,7 +1551,7 @@ def run_once(takeoff: bool = False):
             try:
                 from fresh_demand import enqueue_strong_demand
                 strong = [r for r in all_rows.values() if r.get("需求状态") == "旺盛"]
-                print(f"将为需求充裕的 {len(strong)} 架飞机登记起飞待办", flush=True)
+                print(f"本次快照有 {len(strong)} 架飞机剩余需求达标，登记起飞前检查待办", flush=True)
                 enqueue_strong_demand(strong, status_map=status_map)
             except Exception as e:
                 print(f"⚠ 起飞待办登记异常: {e}", flush=True)
@@ -1921,7 +1943,7 @@ def main():
                 # 槽位调度（按 BJT 日期去重，容忍启动/耗时漂移）：
                 #   轻量 = 其余时刻（市场价/补货/新机登记/检修状态）
                 #   BJT 06:00 = 全面刷新（全部详情/改装/检修）+ 登记起飞待办，
-                #   此时游戏刚重置当天乘客需求，全量抓取让页面显示当天最新需求
+                #   不足结果在本轮重新读取两次，不假定游戏一定已经重置需求。
                 now_bjt = _now_bjt()  # 北京时间（显式 UTC+8）
                 if _first_iteration:
                     # 当日尚未成功全量时立即补做（含改装/检修/全部详情）。

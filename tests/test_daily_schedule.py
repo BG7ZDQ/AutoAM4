@@ -3,7 +3,7 @@ from bootstrap import *
 
 
 class DailyScheduleTests(unittest.TestCase):
-    def test_full_refresh_matches_game_reset_hour(self):
+    def test_full_refresh_has_fixed_collection_hour(self):
         self.assertEqual(collector.DAILY_FULL_HOUR_BJT, 6)
 
     def test_collection_elapsed_time_is_human_readable(self):

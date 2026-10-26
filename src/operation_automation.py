@@ -6,6 +6,10 @@ import math
 import re
 
 
+class MaintenanceLocationUnavailable(ValueError):
+    """官网明确拒绝当前位置的操作；不同于网络、费用或解析失败。"""
+
+
 def number(value) -> float | None:
     try:
         result = float(str(value).replace(",", "").strip())
@@ -60,6 +64,10 @@ def maintenance_quote(page: str, fid: str, action: str) -> dict:
     """从对应操作区读取总价，严格校验目标 ID 和可用按钮。"""
     if not str(fid).isdigit() or action not in {"check", "repair"}:
         raise ValueError("检修目标无效")
+    location = re.search(r"<div\b[^>]*id=['\"]typeCheck['\"][^>]*>(.*?)<div\b[^>]*id=['\"]typeRepair['\"]",
+                         page or "", re.S | re.I)
+    if location and re.search(r"飛機不在樞紐，或現時不在前往樞紐|飞机不在枢纽，或现时不在前往枢纽", location.group(1)):
+        raise MaintenanceLocationUnavailable("飞机不在枢纽或未飞往枢纽，等待返场")
     section_id = "typeCheck" if action == "check" else "typeRepair"
     next_id = "typeRepair" if action == "check" else "typeModify"
     match = re.search(
@@ -72,6 +80,8 @@ def maintenance_quote(page: str, fid: str, action: str) -> dict:
     buttons = re.findall(r"<button\b[^>]*>.*?</button>", section, re.S | re.I)
     if not any((path + "'") in button and not re.search(
             r"\bdisabled\b|not-active", button, re.I) for button in buttons):
+        if re.search(r"飛機不在樞紐，或現時不在前往樞紐|飞机不在枢纽，或现时不在前往枢纽", section):
+            raise MaintenanceLocationUnavailable("飞机不在枢纽或未飞往枢纽，等待返场")
         raise ValueError("游戏暂不允许此项检修（可能不在基地或已有维护）")
     plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", section))
     price = re.search(r"(?:總價格|总价格|Total price)\s*\$\s*([\d,]+)", plain, re.I)

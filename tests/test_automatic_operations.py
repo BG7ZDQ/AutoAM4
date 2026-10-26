@@ -217,3 +217,102 @@ class AutomaticOperationsTests(unittest.TestCase):
              patch.object(server.subprocess, "Popen", side_effect=start):
             server._runner(run)
         self.assertEqual(observed, [(owner, "cargo")])
+
+    def test_inbound_can_book_before_landing_with_unchanged_live_status(self):
+        home = HOME.replace("routeId: 77", f"arrived: {int(time.time()+1000)}, routeId: 77")
+        status = collector.parse_status_data(home)["123"]
+        with self.context(status):
+            self.fetch.side_effect = [MAINT, home]
+            server._run_maintenance_task(self.task(), Mock())
+            self.write.assert_called_once()
+
+    def test_inflight_registration_checks_availability_without_waiting_for_landing(self):
+        with patch.object(server, "_current_operation_settings", return_value={"auto_maintenance": True}), \
+             patch.object(server, "_maintenance_task_active", return_value=False), \
+             patch.object(server, "_add_pending_task") as add:
+            server._ensure_maintenance_tasks({"123": {**STATUS, "预计落地时间戳": time.time()+20000}})
+            self.assertLess(add.call_args.args[2], time.time()+60)
+
+    def test_outstation_is_waiting_for_return_not_a_purchase_failure(self):
+        blocked = MAINT.replace("  <button onClick=", "  飛機不在樞紐，或現時不在前往樞紐。<button disabled onClick=", 1)
+        for action in ["check", "repair"]:
+            with self.assertRaises(ops.MaintenanceLocationUnavailable):
+                ops.maintenance_quote(blocked, "123", action)
+        task = self.task()
+        with self.context():
+            self.fetch.side_effect = [blocked]
+            server._run_maintenance_task(task, Mock())
+            self.write.assert_not_called()
+            self.takeoff.assert_called_once()
+            self.assertTrue(task["params"]["waiting_for_base"])
+            self.assertNotIn("retry", task)
+            self.assertEqual(task["status"], "pending")
+
+    def test_return_exception_requires_live_hub_route_hours_and_no_submission(self):
+        blocked = MAINT.replace("  <button onClick=", "  飛機不在樞紐，或現時不在前往樞紐。<button disabled onClick=", 1)
+        row = {"起飞机场名称": "Juliaca, Perú", "到达机场名称": "Basseterre, Saint Kitts and Nevis", "飞行时长": "03:05:50"}
+        owner = "return-owner"
+        for changes, status, page, submitted, expected in [
+            ({}, STATUS, blocked, False, True),
+            ({}, STATUS, MAINT, False, False),
+            ({"起飞机场名称": "Unknown"}, STATUS, blocked, False, False),
+            ({"到达机场名称": "Juliaca, Perú"}, STATUS, blocked, False, False),
+            ({}, {**STATUS, "距A-Check小时": "2"}, blocked, False, False),
+            ({}, {**STATUS, "损坏率%": "100"}, blocked, False, False),
+            ({}, {**STATUS, "航线ID": "other"}, blocked, False, False),
+            ({}, {**STATUS, "预计落地时间戳": time.time()+1000}, blocked, False, False),
+            ({}, {**STATUS, "停飞": "1"}, blocked, False, False),
+            ({}, STATUS, blocked, True, False)]:
+            task = self.task()
+            if submitted:
+                task["params"]["maintenance_submitted"] = {"action": "check"}
+            with self.subTest(changes=changes, status=status, submitted=submitted, expected=expected), \
+                 patch.object(server, "_task_owner_key", return_value=owner), \
+                 patch.object(server, "_tasks_by_account", {owner: [task]}), \
+                 patch.object(server, "_current_operation_settings", return_value={}), \
+                 patch.object(collector, "fetch", side_effect=[page, "hubs"]), \
+                 patch.object(collector, "parse_hubs", return_value=[{"name": "Perú, Juliaca"}]), \
+                 patch.object(collector, "_do_curl") as write:
+                self.assertEqual(server._maintenance_return_allowed("123", {**row, **changes}, status, "77"), expected)
+                write.assert_not_called()
+
+    def test_unrecognized_maintenance_page_cannot_authorize_return(self):
+        row = {"起飞机场名称": "Juliaca, Perú", "到达机场名称": "Away", "飞行时长": "01:00:00"}
+        with patch.object(server, "_tasks_by_account", {}), \
+             patch.object(server, "_current_operation_settings", return_value={}), \
+             patch.object(collector, "fetch", return_value="login"), self.assertRaises(ValueError):
+            server._maintenance_return_allowed("123", row, STATUS, "77")
+
+    def test_return_wakes_only_own_unsubmitted_maintenance(self):
+        task, submitted, foreign = self.task(), self.task(), self.task()
+        for t in [task, submitted, foreign]:
+            t.update(status="pending", trigger_at=time.time()+20000)
+        submitted["params"]["maintenance_submitted"] = {"action": "check"}
+        with patch.object(server, "_task_owner_key", return_value="one"), \
+             patch.object(server, "_tasks_by_account", {"one": [task, submitted], "two": [foreign]}):
+            server._wake_return_maintenance("123")
+        self.assertLess(task["trigger_at"], time.time()+60)
+        self.assertGreater(submitted["trigger_at"], time.time()+10000)
+        self.assertGreater(foreign["trigger_at"], time.time()+10000)
+
+    def test_return_takeoff_keeps_demand_fuel_checks_and_wakes_maintenance_only_on_acceptance(self):
+        for demand, fuel, accepted in [("旺盛", 1_000_000, True), ("不足", 1_000_000, False),
+                                       ("旺盛", 0, False)]:
+            task = {"kind": "takeoff", "status": "running", "params": {"fid": "123", "reg": "TEST-1", "route_id": "77"}}
+            planner = Mock()
+            planner.classify_takeoff_response.return_value = "accepted"
+            with self.subTest(demand=demand, fuel=fuel), ExitStack() as stack:
+                for name, value in [("_get_route_planner", planner), ("_latest_home_maintenance", STATUS),
+                                    ("_refresh_fleet_row", {"需求状态": demand, "飞行时长": "03:00:00"}),
+                                    ("_current_operation_settings", {"auto_maintenance": True}),
+                                    ("_current_fuel_lbs", fuel), ("_retrofit_blocks_takeoff", None),
+                                    ("_maintenance_return_allowed", True), ("_maintenance_task_active", True),
+                                    ("_takeoff_maintenance_block", "A-Check threshold"),
+                                    ("_ensure_maintenance_tasks", None), ("_publish_log", None),
+                                    ("_broadcast_sse", None), ("_broadcast_operation_status", None),
+                                    ("_mark_build", None), ("_add_takeoff_task", None)]:
+                    stack.enter_context(patch.object(server, name, return_value=value))
+                wake = stack.enter_context(patch.object(server, "_wake_return_maintenance"))
+                server._run_pending_task(task)
+                self.assertEqual(planner.takeoff_route.called, accepted)
+                self.assertEqual(wake.called, accepted)
