@@ -1782,7 +1782,7 @@ def _maintenance_return_allowed(fid: str, row: dict, status: dict, route_id: str
         return False  # 当前可以检修：必须先检修，不能离开基地。
     except MaintenanceLocationUnavailable:
         pass
-    # 已落地详情展示上一航段；下一班沿原航线返回。严格匹配官网枢纽，
+    # 官网落地后会把详情航向切换成下一班；目的地必须是自有枢纽。
     # 不用本地建设记录或包含子串的城市名猜测；未知位置保持保护。
     hubs = ext.parse_hubs(ext.fetch(ext.HUBS, referer=ext.HOME))
     names = set()
@@ -1792,7 +1792,7 @@ def _maintenance_return_allowed(fid: str, row: dict, status: dict, route_id: str
             names.add(f"{parts[1]}, {parts[0]}".casefold())
     origin = str(row.get("起飞机场名称", "")).strip().casefold()
     destination = str(row.get("到达机场名称", "")).strip().casefold()
-    return bool(origin in names and destination and destination not in names)
+    return bool(destination in names and origin and origin not in names)
 
 
 def _wake_return_maintenance(fid: str) -> None:

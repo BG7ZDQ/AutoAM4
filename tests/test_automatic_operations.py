@@ -250,13 +250,16 @@ class AutomaticOperationsTests(unittest.TestCase):
 
     def test_return_exception_requires_live_hub_route_hours_and_no_submission(self):
         blocked = MAINT.replace("  <button onClick=", "  飛機不在樞紐，或現時不在前往樞紐。<button disabled onClick=", 1)
-        row = {"起飞机场名称": "Juliaca, Perú", "到达机场名称": "Basseterre, Saint Kitts and Nevis", "飞行时长": "03:05:50"}
+        # 官网落地后的真实航向：外站 Basseterre -> 自有枢纽 Juliaca。
+        row = {"起飞机场名称": "Basseterre, Saint Kitts and Nevis", "到达机场名称": "Juliaca, Perú", "飞行时长": "03:05:50"}
         owner = "return-owner"
         for changes, status, page, submitted, expected in [
             ({}, STATUS, blocked, False, True),
             ({}, STATUS, MAINT, False, False),
-            ({"起飞机场名称": "Unknown"}, STATUS, blocked, False, False),
-            ({"到达机场名称": "Juliaca, Perú"}, STATUS, blocked, False, False),
+            ({"到达机场名称": "Unknown"}, STATUS, blocked, False, False),
+            ({"起飞机场名称": "Juliaca, Perú"}, STATUS, blocked, False, False),
+            ({"起飞机场名称": "Juliaca, Perú", "到达机场名称": "Basseterre, Saint Kitts and Nevis"}, STATUS, blocked, False, False),
+            ({"起飞机场名称": "Kingston, Jamaica", "飞行时长": "03:08:19"}, STATUS, blocked, False, True),
             ({}, {**STATUS, "距A-Check小时": "2"}, blocked, False, False),
             ({}, {**STATUS, "损坏率%": "100"}, blocked, False, False),
             ({}, {**STATUS, "航线ID": "other"}, blocked, False, False),
