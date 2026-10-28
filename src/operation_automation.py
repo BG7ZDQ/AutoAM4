@@ -85,11 +85,14 @@ def maintenance_quote(page: str, fid: str, action: str) -> dict:
         raise ValueError("游戏暂不允许此项检修（可能不在基地或已有维护）")
     plain = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", section))
     price = re.search(r"(?:總價格|总价格|Total price)\s*\$\s*([\d,]+)", plain, re.I)
-    duration = re.search(r"(?:檢修時間|检修时间|維修時間|维修时间)\s*(\d+):(\d+):(\d+)", plain)
+    duration = re.search(r"(?:檢修時間|检修时间|維修時間|维修时间)\s*(?:(\d+)d\s+)?(\d+):(\d{2}):(\d{2})(?![\d:])", plain, re.I)
     if not price or not duration:
         raise ValueError("检修总价或时长无法确认")
     cost = number(price.group(1))
-    seconds = int(duration.group(1))*3600 + int(duration.group(2))*60 + int(duration.group(3))
+    days, hours, minutes, secs = (int(v or 0) for v in duration.groups())
+    if minutes >= 60 or secs >= 60 or (days and hours >= 24):
+        raise ValueError("检修时长格式无效")
+    seconds = days*86400 + hours*3600 + minutes*60 + secs
     if cost is None or cost <= 0 or seconds <= 0:
         raise ValueError("检修总价或时长无效")
     return {"path": path, "cost": cost, "seconds": seconds}

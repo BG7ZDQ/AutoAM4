@@ -273,7 +273,7 @@ class AutomaticOperationsTests(unittest.TestCase):
                  patch.object(server, "_task_owner_key", return_value=owner), \
                  patch.object(server, "_tasks_by_account", {owner: [task]}), \
                  patch.object(server, "_current_operation_settings", return_value={}), \
-                 patch.object(collector, "fetch", side_effect=[page, "hubs"]), \
+                 patch.object(collector, "fetch", side_effect=[page, "hubs", "no takeoff button"]), \
                  patch.object(collector, "parse_hubs", return_value=[{"name": "Perú, Juliaca"}]), \
                  patch.object(collector, "_do_curl") as write:
                 self.assertEqual(server._maintenance_return_allowed("123", {**row, **changes}, status, "77"), expected)
@@ -319,3 +319,46 @@ class AutomaticOperationsTests(unittest.TestCase):
                 server._run_pending_task(task)
                 self.assertEqual(planner.takeoff_route.called, accepted)
                 self.assertEqual(wake.called, accepted)
+
+    def test_day_duration_and_invalid_time(self):
+        for text, seconds in [("01d 14:07:19", 137239), ("01d 12:02:19", 129739), ("03:21:11", 12071)]:
+            self.assertEqual(ops.maintenance_quote(MAINT.replace("03:21:11", text), "123", "check")["seconds"], seconds)
+        for text in ["01d 24:00:00", "03:60:00", "03:00:60", "tomorrow", "00:00:00"]:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                ops.maintenance_quote(MAINT.replace("03:21:11", text), "123", "check")
+
+    def test_preflight_reserves_round_trip_plus_buffer_only_at_base(self):
+        row = {"起飞机场名称": "Juliaca, Perú", "到达机场名称": "Damascus, Syria", "飞行时长": "10:48:37"}
+        settings = {"auto_maintenance": True, "min_a_check_hours": 5}
+        with patch.object(server, "_live_hub_airport_names", return_value={"juliaca, perú"}):
+            self.assertEqual(server._preflight_maintenance_hours(row, {**STATUS, "距A-Check小时": "26"}, settings), 27)
+            self.assertIsNone(server._preflight_maintenance_hours(row, {**STATUS, "距A-Check小时": "28"}, settings))
+            self.assertIsNone(server._preflight_maintenance_hours({**row, "起飞机场名称": "Damascus, Syria", "到达机场名称": "Juliaca, Perú"}, STATUS, settings))
+            self.assertIsNone(server._preflight_maintenance_hours(row, {**STATUS, "预计落地时间戳": time.time()+1000}, settings))
+
+    def test_preflight_maintenance_uses_rechecked_route_and_live_quote(self):
+        task = self.task(); task["params"]["preflight_check"] = True
+        home = HOME.replace("hoursToCheck: 5", "hoursToCheck: 26").replace("wear: 81", "wear: 10")
+        status = collector.parse_status_data(home)["123"]
+        with self.context(status), \
+             patch.object(server, "_refresh_fleet_row", return_value={"飞行时长": "10:48:37"}), \
+             patch.object(server, "_preflight_maintenance_hours", return_value=27):
+            self.fetch.side_effect = [MAINT, home]
+            server._run_maintenance_task(task, Mock())
+            self.write.assert_called_once()
+
+    def test_overdue_return_requires_live_enabled_button_and_same_direction(self):
+        row = {"起飞机场名称": "Damascus, Syria", "到达机场名称": "Juliaca, Perú", "飞行时长": "10:48:37"}
+        blocked = MAINT.replace("  <button onClick=", " 飛機不在樞紐，或現時不在前往樞紐。<button disabled onClick=", 1)
+        button = "<button onclick=\"Ajax('route_depart.php?id=77&ref=list')\">起飛</button>"
+        for page, destination, expected in [(button, "Juliaca, Perú", True),
+                                             (button.replace("<button", "<button disabled"), "Juliaca, Perú", False),
+                                             (button.replace("id=77", "id=778"), "Juliaca, Perú", False),
+                                             (button, "Damascus, Syria", False)]:
+            with self.subTest(page=page, destination=destination), \
+                 patch.object(server, "_tasks_by_account", {}), \
+                 patch.object(server, "_current_operation_settings", return_value={}), \
+                 patch.object(server, "_live_hub_airport_names", return_value={"juliaca, perú"}), \
+                 patch.object(collector, "fetch", side_effect=[blocked, page]), \
+                 patch.object(collector, "parse_aircraft_detail", return_value={"origin_name": "Damascus, Syria", "destination_name": destination}):
+                self.assertEqual(server._maintenance_return_allowed("123", row, {**STATUS, "距A-Check小时": "-1"}, "77"), expected)

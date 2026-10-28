@@ -128,7 +128,7 @@ _SUBPROCESS_FLAGS = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 # 飞机结束飞行、维护或改装后，等待游戏状态完成切换再尝试起飞。
 TAKEOFF_READY_BUFFER_SECONDS = 120
-DAILY_FULL_HOUR_BJT = 6       # 固定全量采集时间；不足结果在本轮重新读取两次
+DAILY_FULL_HOUR_BJT = 6       # 固定全量采集时间；不足结果登记两次延后复核
 
 _LEGACY_FLEET_CSV = OUT / "fleet_complete.csv"
 FLEET_CSV = OUT / "fleet.csv"
@@ -530,25 +530,13 @@ def parse_aircraft_detail(detail_html: str):
 
 
 def fetch_detail_with_demand_retries(url: str, *, referer: str, label: str) -> dict | None:
-    """全量核查：初读不足才再读两次；三次确认不足后才落盘，不创建周期待办。"""
+    """全量只做首读；不足结果由服务端在一小时、两小时后各复核一次。"""
     page = fetch(url, referer=referer, label=label)
     if not page.strip():
         return None
     detail = parse_aircraft_detail(page)
-    if detail["demand_status"] != "不足":
-        return detail
-    confirmed = 1
-    for attempt in range(1, 3):
-        # fetch 已有请求间隔与网络重试；此处的两次是业务层重新读取需求。
-        fresh = parse_aircraft_detail(fetch(
-            url, referer=referer, label=f"{label}：需求不足，复核 {attempt}/2"))
-        if fresh["demand_status"] == "旺盛":
-            return fresh
-        if fresh["demand_status"] == "不足":
-            confirmed += 1
-            detail = fresh
-    if confirmed != 3:
-        detail["demand_status"] = ""
+    if detail["demand_status"] == "不足":
+        detail["demand_status"] = "待复核"
     return detail
 
 
@@ -1943,7 +1931,7 @@ def main():
                 # 槽位调度（按 BJT 日期去重，容忍启动/耗时漂移）：
                 #   轻量 = 其余时刻（市场价/补货/新机登记/检修状态）
                 #   BJT 06:00 = 全面刷新（全部详情/改装/检修）+ 登记起飞待办，
-                #   不足结果在本轮重新读取两次，不假定游戏一定已经重置需求。
+                #   不足结果登记两次延后复核，不假定游戏一定已经重置需求。
                 now_bjt = _now_bjt()  # 北京时间（显式 UTC+8）
                 if _first_iteration:
                     # 当日尚未成功全量时立即补做（含改装/检修/全部详情）。

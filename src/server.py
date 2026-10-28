@@ -1629,8 +1629,104 @@ def _ensure_marketing_tasks() -> None:
 
 
 _AIRCRAFT_OWNED_TASK_KINDS = {
-    "takeoff", "takeoff_reconcile", "retrofit", "delivery_continue", "maintenance",
+    "takeoff", "takeoff_reconcile", "retrofit", "delivery_continue", "maintenance", "demand_recheck",
 }
+
+
+_DEMAND_RECHECK_INTERVAL = 3600
+
+
+def _set_demand_check_label(fid: str, label: str) -> None:
+    path = _paths()["fleet"]
+    with exclusive_file_lock(path):
+        rows = _read_csv(path)
+        row = next((r for r in rows if str(r.get("飞机ID", "")) == fid), None)
+        if row is None or row.get("需求状态") != "待复核":
+            return
+        row["需求状态"] = label
+        if not _write_fleet_csv(rows, already_locked=True):
+            raise OSError("需求核查结果保存失败")
+    _broadcast_sse({"type": "aircraft", "data": row, "account": _session_account().get("email", "")})
+
+
+def _register_daily_demand_recheck(row: dict) -> None:
+    """每账号/飞机/日仅两次复核；重复采集与重启不会清零次数。"""
+    if row.get("需求状态") != "待复核" or row.get("建设状态"):
+        return
+    fid, reg = str(row.get("飞机ID", "")), str(row.get("注册号", ""))
+    if not fid.isdigit() or not reg:
+        return
+    cycle = str(row.get("最后更新时间", ""))[:10] or _now_bjt().date().isoformat()
+    owner = _task_owner_key()
+    with _pending_lock:
+        for old in _tasks_by_account.get(owner, []):
+            params = old.get("params") or {}
+            if old.get("kind") != "demand_recheck" or str(params.get("fid", "")) != fid:
+                continue
+            if params.get("cycle") == cycle:
+                if old.get("status") in {"done", "failed"}:
+                    _set_demand_check_label(fid, "不足" if old.get("status") == "done" else "未知")
+                return
+            if old.get("status") in {"pending", "running"}:
+                old.update(status="superseded", error="新一日全量核查已替代旧复核")
+        _add_pending_task("demand_recheck", f"{reg} 每日需求复核（最多两次）",
+                          time.time() + _DEMAND_RECHECK_INTERVAL,
+                          {"fid": fid, "reg": reg, "cycle": cycle, "attempts": 0}, jitter=0)
+
+
+def _run_daily_demand_recheck(task: dict, planner) -> None:
+    params = task["params"]
+    fid, reg = str(params.get("fid", "")), str(params.get("reg", ""))
+    if params.get("cycle") != _now_bjt().date().isoformat():
+        task.update(status="superseded", error="旧日需求复核已过期")
+        return
+    if not params.get("demand_recovered"):
+        attempts = int(params.get("attempts", 0))
+        if attempts >= 2:
+            if task.get("status") not in {"done", "failed"}:
+                _set_demand_check_label(fid, "未知")
+                task.update(status="failed", error="复核次数已用尽，最后结果未确认", completed_at=time.time())
+            return
+        # 请求前持久化次数：进程中断也不能重置为无限复核。
+        params["attempts"] = attempts + 1
+        try:
+            _save_pending_tasks(owner=task["account"], strict=True)
+        except Exception:
+            params["attempts"] = attempts
+            raise
+        row = _refresh_fleet_row(reg, fid, "", defer_insufficient=attempts == 0 or bool(params.get("unconfirmed")))
+        if _removed_aircraft_guard(task):
+            return
+        result = (row or {}).get("需求状态", "")
+        _publish_log(f"🔎 {reg} 每日需求复核 {attempts+1}/2：{result or '未确认'}")
+        if result != "旺盛":
+            if result not in {"不足", "待复核"}:
+                params["unconfirmed"] = True
+            if attempts == 0:
+                task.update(status="pending", trigger_at=time.time()+_DEMAND_RECHECK_INTERVAL,
+                            error="等待第二次需求复核")
+            else:
+                confirmed = result == "不足" and not params.get("unconfirmed")
+                if not confirmed:
+                    _set_demand_check_label(fid, "未知")
+                task.update(status="done" if confirmed else "failed",
+                            error=None if confirmed else "两次复核结束，需求未能确认", completed_at=time.time())
+            return
+        params["demand_recovered"] = True
+        _save_pending_tasks(owner=task["account"], strict=True)
+    settings = _current_operation_settings()
+    if settings.get("auto_takeoff", True):
+        status = _latest_home_maintenance(planner, reg, fid=fid, force_refresh=True)
+        if not status:
+            _defer_online_failure(task, "demand_recovery", "需求恢复，等待确认飞行状态")
+            return
+        if str(status.get("停飞", "0") or "0").lower() in {"0", "false"} and status.get("航线ID"):
+            ready = max(time.time(), float(status.get("预计落地时间戳") or 0), _home_maintenance_ready_at(status))
+            _accept_takeoff_takeover({"fid": fid, "reg": reg, "route_id": str(status["航线ID"]),
+                                      "ready_at": ready, "trigger_at": ready+120,
+                                      "cost_index": int(settings.get("cost_index", 200)), "reason": "每日需求复核恢复"})
+    task.update(status="done", error=None, completed_at=time.time())
+    task.pop("retry", None)
 
 
 def _maintenance_task_active(fid: str) -> bool:
@@ -1641,12 +1737,14 @@ def _maintenance_task_active(fid: str) -> bool:
                    for t in _tasks_by_account.get(_task_owner_key(), []))
 
 
-def _ensure_maintenance_tasks(status_map: dict) -> None:
+def _ensure_maintenance_tasks(status_map: dict, *, preflight_hours: float | None = None) -> None:
     """采集主页或起飞检查发现超限时登记；已有任务的提交记录不可覆盖。"""
     from operation_automation import maintenance_action, number
     settings = _current_operation_settings()
     if not settings.get("auto_maintenance", False):
         return
+    if preflight_hours is not None:
+        settings = {**settings, "min_a_check_hours": max(float(settings.get("min_a_check_hours", 5)), preflight_hours)}
     for fid, status in status_map.items():
         if (not str(fid).isdigit() or not status.get("注册号")
                 or str(status.get("停飞", "0") or "0").lower() not in {"0", "false"}
@@ -1658,7 +1756,8 @@ def _ensure_maintenance_tasks(status_map: dict) -> None:
         ready_at = max(time.time() + 15,
                        (number(status.get("维护改装结束时间戳")) or 0) + 120)
         _add_pending_task("maintenance", f"飞机 {status['注册号']} 自动检修维护", ready_at,
-                          {"fid": str(fid), "reg": status["注册号"]})
+                          {"fid": str(fid), "reg": status["注册号"],
+                           "preflight_check": preflight_hours is not None})
 
 
 def _run_maintenance_task(task: dict, online_planner) -> None:
@@ -1688,6 +1787,13 @@ def _run_maintenance_task(task: dict, online_planner) -> None:
             return
         if any(number(latest.get(k)) is None for k in ("距A-Check小时", "损坏率%")):
             raise ValueError("检修小时或损坏率未知，未执行购买")
+        if params.get("preflight_check"):
+            live_row = _refresh_fleet_row(reg, fid, "")
+            if not live_row:
+                raise ValueError("预防检修前无法确认当前航线")
+            reserve = _preflight_maintenance_hours(live_row, latest, settings)
+            if reserve is not None:
+                settings = {**settings, "min_a_check_hours": reserve}
         action = maintenance_action(latest, settings)
         if action is None:
             task.update(status="done", error=None, completed_at=time.time())
@@ -1751,6 +1857,40 @@ def _run_maintenance_task(task: dict, online_planner) -> None:
         _defer_online_failure(task, "maintenance", str(exc))
 
 
+def _live_hub_airport_names() -> set[str]:
+    import collector as ext
+    hubs = ext.parse_hubs(ext.fetch(ext.HUBS, referer=ext.HOME))
+    if not hubs:
+        raise ValueError("官网枢纽列表无法确认")
+    names = set()
+    for hub in hubs:
+        parts = str(hub.get("name", "")).split(", ", 1)
+        if len(parts) == 2:
+            names.add(f"{parts[1]}, {parts[0]}".casefold())
+    return names
+
+
+def _preflight_maintenance_hours(row: dict, status: dict, settings: dict) -> float | None:
+    """基地离场前预留整个往返（每程向上取整）和原保护余量。"""
+    import math
+    from operation_automation import number
+    if not settings.get("auto_maintenance", False):
+        return None
+    duration = _flight_duration_seconds(row.get("飞行时长", ""))
+    hours = number(status.get("距A-Check小时"))
+    if duration <= 0 or hours is None or (number(status.get("预计落地时间戳")) or 0) > time.time():
+        return None
+    reserve = 2 * math.ceil(duration / 3600) + max(0, float(settings.get("min_a_check_hours", 5)))
+    if hours > reserve:
+        return None
+    origin = str(row.get("起飞机场名称", "")).strip().casefold()
+    dest = str(row.get("到达机场名称", "")).strip().casefold()
+    if not origin or not dest:
+        return None
+    names = _live_hub_airport_names()
+    return reserve if origin in names and dest and dest not in names else None
+
+
 def _maintenance_return_allowed(fid: str, row: dict, status: dict, route_id: str) -> bool:
     """仅为已落地外站、下一班确认返回自有枢纽的飞机放行软检修阈值。"""
     import collector as ext
@@ -1770,7 +1910,7 @@ def _maintenance_return_allowed(fid: str, row: dict, status: dict, route_id: str
             or (number(status.get("预计落地时间戳")) or 0) > now
             or (number(status.get("维护改装结束时间戳")) or 0) > now
             or str(status.get("停飞", "0") or "0").lower() not in {"0", "false"}
-            or hours is None or duration <= 0 or hours < duration / 3600
+            or hours is None or duration <= 0
             or wear is None or wear >= 100):
         return False
     action = maintenance_action(status, _current_operation_settings())
@@ -1784,15 +1924,23 @@ def _maintenance_return_allowed(fid: str, row: dict, status: dict, route_id: str
         pass
     # 官网落地后会把详情航向切换成下一班；目的地必须是自有枢纽。
     # 不用本地建设记录或包含子串的城市名猜测；未知位置保持保护。
-    hubs = ext.parse_hubs(ext.fetch(ext.HUBS, referer=ext.HOME))
-    names = set()
-    for hub in hubs:
-        parts = str(hub.get("name", "")).split(", ", 1)
-        if len(parts) == 2:
-            names.add(f"{parts[1]}, {parts[0]}".casefold())
+    names = _live_hub_airport_names()
     origin = str(row.get("起飞机场名称", "")).strip().casefold()
     destination = str(row.get("到达机场名称", "")).strip().casefold()
-    return bool(destination in names and origin and origin not in names)
+    if not (destination in names and origin and origin not in names):
+        return False
+    if hours < duration / 3600:
+        # 旧版本遗留的外站欠检修飞机：只接受官网明确可执行的原航线返场按钮。
+        page = ext.fetch(f"{ext.BASE}/fleet_details.php?id={fid}", referer=ext.HOME)
+        detail = ext.parse_aircraft_detail(page)
+        if (detail.get("origin_name", "").strip().casefold() != origin
+                or detail.get("destination_name", "").strip().casefold() != destination):
+            return False
+        buttons = re.findall(r"<button\b[^>]*>.*?</button>", page, re.S | re.I)
+        return any(re.search(r"route_depart\.php\?id=" + re.escape(route_id) + r"(?:&|['\"])", button)
+                   and not re.search(r"\bdisabled\b|not-active", button, re.I) for button in buttons)
+    return True
+
 
 
 def _wake_return_maintenance(fid: str) -> None:
@@ -1836,7 +1984,7 @@ def _aircraft_task_identity(kind: str, params: dict) -> tuple:
     route = str((params or {}).get("route_id", "") or "")
     if kind in {"takeoff", "takeoff_reconcile", "retrofit"}:
         return (fid or f"reg:{reg}", route)
-    if kind in {"delivery_continue", "maintenance"}:
+    if kind in {"delivery_continue", "maintenance", "demand_recheck"}:
         return (fid or f"reg:{reg}",)
     if kind == "marketing":
         return (str((params or {}).get("campaign", "") or ""),)
@@ -2098,7 +2246,7 @@ def _add_pending_task(kind: str, title: str, trigger_at: float, params: dict,
                     old.pop("retry", None)
                     old.pop("completed_at", None)
                     _save_pending_tasks(owner=owner)
-                elif old.get("status") == "pending" and kind != "maintenance":
+                elif old.get("status") == "pending" and kind not in {"maintenance", "demand_recheck"}:
                     if kind == "takeoff":
                         old_params = old.get("params") or {}
                         old_ready = float(old_params.get("ready_at", 0) or 0)
@@ -2511,6 +2659,10 @@ def _run_pending_task(task: dict) -> None:
             rp = _get_route_planner(require_login=True)
         return rp
 
+    if kind == "demand_recheck":
+        _run_daily_demand_recheck(task, online_planner())
+        return
+
     if kind == "maintenance":
         _run_maintenance_task(task, online_planner)
         return
@@ -2912,11 +3064,18 @@ def _run_pending_task(task: dict) -> None:
         for key in ("距A-Check小时", "损坏率%"):
             if str(latest_status.get(key, "")).strip():
                 refreshed[key] = latest_status[key]
+        try:
+            preflight_hours = _preflight_maintenance_hours(refreshed, latest_status, _current_operation_settings())
+        except Exception as exc:
+            _defer_online_failure(task, "preflight_maintenance", f"离场检修余量核验失败：{exc}")
+            return
         latest_maint_reason = _takeoff_maintenance_block(reg, row=refreshed, fid=fid)
+        if preflight_hours is not None:
+            latest_maint_reason = f"需预留往返航程与检修余量 {preflight_hours:g} 小时"
         returning_for_maintenance = False
         if latest_maint_reason:
             if _current_operation_settings().get("auto_maintenance", False):
-                _ensure_maintenance_tasks({fid: {**latest_status, "注册号": reg}})
+                _ensure_maintenance_tasks({fid: {**latest_status, "注册号": reg}}, preflight_hours=preflight_hours)
                 try:
                     returning_for_maintenance = _maintenance_return_allowed(fid, refreshed, latest_status, route_id)
                 except Exception as exc:
@@ -3651,7 +3810,7 @@ def _clear_building_fleet_row(reg: str, *, remove_placeholder: bool = False) -> 
 
 
 def _refresh_fleet_row(reg: str, fid: str, hub_id: str, *,
-                       finalize_build: bool = False) -> dict | None:
+                       finalize_build: bool = False, defer_insufficient: bool = False) -> dict | None:
     """抓取一架飞机详情；建设期预检不覆盖主表，首航确认后才最终回填。"""
     reg = str(reg or "").strip()
     fid = str(fid or "").strip()
@@ -3701,6 +3860,8 @@ def _refresh_fleet_row(reg: str, fid: str, hub_id: str, *,
         fr = _rp.fetch_aircraft_fleet_row(str(fid), hub_name, reg)
         if not fr:
             return None
+        if defer_insufficient and fr.get("需求状态") == "不足":
+            fr["需求状态"] = "待复核"
         # 航线可能已人工调整；新详情能确定的枢纽优先于旧建设/缓存分类。
         inferred = _infer_hub_name(fr)
         if inferred:
@@ -4780,7 +4941,7 @@ def api_pending():
         "status": t.get("status"),
         "error": t.get("error"),
         "route_id": str((t.get("params") or {}).get("route_id", "")),
-        "route_required": t.get("kind") in (_AIRCRAFT_OWNED_TASK_KINDS - {"maintenance"}),
+        "route_required": t.get("kind") in (_AIRCRAFT_OWNED_TASK_KINDS - {"maintenance", "demand_recheck"}),
         "route_ready": bool(t.get("params", {}).get("route_id")),
         "trigger_at": t.get("trigger_at"),
         "remaining": max(0, int(t.get("trigger_at", now) - now)),
@@ -5334,6 +5495,8 @@ def _runner(run: dict) -> None:
                             _home_status_ts[key] = time.time()
                         _broadcast_operation_statuses(status_map, email)
                         _ensure_maintenance_tasks(status_map)
+                        for row in _read_csv(run_paths["fleet"]):
+                            _register_daily_demand_recheck(row)
                     continue
                 except Exception:
                     pass
@@ -5394,6 +5557,7 @@ def _runner(run: dict) -> None:
             if line.startswith("__AIRCRAFT__"):
                 try:
                     ac = json.loads(line[len("__AIRCRAFT__"):])
+                    _register_daily_demand_recheck(ac)
                     with _maint_cache_lock:
                         live_statuses = dict(_home_status_cache.get(key) or {})
                     ac_status = live_statuses.get(str(ac.get("飞机ID", "")), {})
