@@ -157,3 +157,61 @@ class DailyDemandRecheckTests(unittest.TestCase):
             server._run_daily_demand_recheck(task, Mock())
         refresh.assert_not_called()
         self.assertEqual(task["status"], "failed")
+
+    def test_morning_post_takeoff_snapshot_gets_one_delayed_check(self):
+        now = datetime(2026, 10, 29, 7, 54, tzinfo=server.BJT)
+        row = {"飞机ID": "123", "注册号": "TEST", "需求状态": "不足", "最后更新时间": "2026-10-29 06:45:26"}
+        with patch.object(server, "_now_bjt", return_value=now), patch.object(server.time, "time", return_value=now.timestamp()):
+            server._register_daily_demand_recheck(row)
+            server._register_daily_demand_recheck(row)
+        self.assertEqual(len(self.tasks), 1)
+        self.assertEqual(self.tasks[0]["trigger_at"], now.timestamp()+15)
+        self.assertEqual(self.tasks[0]["params"]["attempts"], 0)
+        self.assertEqual(self.tasks[0]["params"]["cycle"], "2026-10-29")
+
+    def test_fresh_morning_snapshot_waits_one_hour(self):
+        now = datetime(2026, 10, 29, 6, 45, tzinfo=server.BJT)
+        row = {"飞机ID": "123", "注册号": "TEST", "需求状态": "不足", "最后更新时间": "2026-10-29 06:45:00"}
+        with patch.object(server, "_now_bjt", return_value=now), patch.object(server.time, "time", return_value=now.timestamp()):
+            server._register_daily_demand_recheck(row)
+        self.assertEqual(self.tasks[0]["trigger_at"], now.timestamp()+3600)
+
+    def test_outside_morning_window_and_old_days_never_create_polling(self):
+        now = datetime(2026, 10, 29, 15, 0, tzinfo=server.BJT)
+        for stamp in ["2026-10-29 05:59:59", "2026-10-29 08:00:00", "2026-10-29 15:00:00", "2026-10-28 06:45:00", "bad"]:
+            with self.subTest(stamp=stamp), patch.object(server, "_now_bjt", return_value=now):
+                server._register_daily_demand_recheck({"飞机ID": "123", "注册号": "TEST", "需求状态": "不足", "最后更新时间": stamp})
+        self.assertFalse(self.tasks)
+
+    def test_completed_daily_budget_is_not_reopened_by_post_takeoff_snapshot(self):
+        now = datetime(2026, 10, 29, 7, 30, tzinfo=server.BJT)
+        for attempts in [1, 2]:
+            task = {**self.task(), "status": "done"}
+            task["params"].update(cycle="2026-10-29", attempts=attempts, demand_recovered=True)
+            self.tasks[:] = [task]
+            with patch.object(server, "_now_bjt", return_value=now):
+                server._register_daily_demand_recheck({"飞机ID": "123", "注册号": "TEST", "需求状态": "不足", "最后更新时间": "2026-10-29 06:45:00"})
+            self.assertEqual(len(self.tasks), 1)
+            self.assertEqual(task["status"], "done")
+            self.assertEqual(task["params"]["attempts"], attempts)
+
+    def test_existing_flight_followup_is_not_rescheduled_by_demand_recovery(self):
+        task = self.task()
+        flight = {"kind": "takeoff", "status": "pending", "trigger_at": 9999999999, "params": {"fid": "123"}}
+        self.tasks.append(flight)
+        with patch.object(server, "_refresh_fleet_row", return_value={"需求状态": "旺盛"}), \
+             patch.object(server, "_latest_home_maintenance") as home, \
+             patch.object(server, "_accept_takeoff_takeover") as enroll:
+            server._run_daily_demand_recheck(task, Mock())
+        self.assertEqual(task["status"], "done")
+        self.assertEqual(flight["trigger_at"], 9999999999)
+        home.assert_not_called()
+        enroll.assert_not_called()
+
+    def test_other_account_flight_does_not_block_own_recovery(self):
+        server._tasks_by_account["other"] = [{"kind": "takeoff", "status": "pending", "params": {"fid": "123"}}]
+        with patch.object(server, "_refresh_fleet_row", return_value={"需求状态": "旺盛"}), \
+             patch.object(server, "_latest_home_maintenance", return_value={"航线ID": "7"}), \
+             patch.object(server, "_accept_takeoff_takeover") as enroll:
+            server._run_daily_demand_recheck(self.task(), Mock())
+        enroll.assert_called_once()

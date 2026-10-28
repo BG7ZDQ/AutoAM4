@@ -1634,6 +1634,8 @@ _AIRCRAFT_OWNED_TASK_KINDS = {
 
 
 _DEMAND_RECHECK_INTERVAL = 3600
+_MORNING_DEMAND_START_HOUR = 6
+_MORNING_DEMAND_END_HOUR = 8
 
 
 def _set_demand_check_label(fid: str, label: str) -> None:
@@ -1651,7 +1653,21 @@ def _set_demand_check_label(fid: str, label: str) -> None:
 
 def _register_daily_demand_recheck(row: dict) -> None:
     """每账号/飞机/日仅两次复核；重复采集与重启不会清零次数。"""
-    if row.get("需求状态") != "待复核" or row.get("建设状态"):
+    if row.get("建设状态"):
+        return
+    state = row.get("需求状态")
+    observed_at = None
+    if state == "不足":
+        # 起飞后剩余需求可能降到不足；仅补齐早晨重置窗口内的快照。
+        # 以快照时间判定，因此服务较晚重启也能恢复当日遗漏；不变成全天轮询。
+        try:
+            observed_at = datetime.strptime(str(row.get("最后更新时间", "")), "%Y-%m-%d %H:%M:%S").replace(tzinfo=BJT)
+        except ValueError:
+            return
+        if (observed_at.date() != _now_bjt().date()
+                or not _MORNING_DEMAND_START_HOUR <= observed_at.hour < _MORNING_DEMAND_END_HOUR):
+            return
+    elif state != "待复核":
         return
     fid, reg = str(row.get("飞机ID", "")), str(row.get("注册号", ""))
     if not fid.isdigit() or not reg:
@@ -1670,7 +1686,8 @@ def _register_daily_demand_recheck(row: dict) -> None:
             if old.get("status") in {"pending", "running"}:
                 old.update(status="superseded", error="新一日全量核查已替代旧复核")
         _add_pending_task("demand_recheck", f"{reg} 每日需求复核（最多两次）",
-                          time.time() + _DEMAND_RECHECK_INTERVAL,
+                          (max(time.time() + 15, observed_at.timestamp() + _DEMAND_RECHECK_INTERVAL)
+                           if observed_at is not None else time.time() + _DEMAND_RECHECK_INTERVAL),
                           {"fid": fid, "reg": reg, "cycle": cycle, "attempts": 0}, jitter=0)
 
 
@@ -1714,8 +1731,14 @@ def _run_daily_demand_recheck(task: dict, planner) -> None:
             return
         params["demand_recovered"] = True
         _save_pending_tasks(owner=task["account"], strict=True)
+    # 已在飞行/等待落地的飞机已有接管链，本次只更新需求，避免重排它的起飞时间。
+    with _pending_lock:
+        has_takeoff = any(t.get("kind") in {"takeoff", "takeoff_reconcile"}
+                          and t.get("status") in {"pending", "running"}
+                          and str((t.get("params") or {}).get("fid", "")) == fid
+                          for t in _tasks_by_account.get(_task_owner_key(), []))
     settings = _current_operation_settings()
-    if settings.get("auto_takeoff", True):
+    if settings.get("auto_takeoff", True) and not has_takeoff:
         status = _latest_home_maintenance(planner, reg, fid=fid, force_refresh=True)
         if not status:
             _defer_online_failure(task, "demand_recovery", "需求恢复，等待确认飞行状态")
@@ -3896,6 +3919,10 @@ def _refresh_fleet_row(reg: str, fid: str, hub_id: str, *,
                             "account": _session_account().get("email", "")})
         except Exception:
             pass
+        try:
+            _register_daily_demand_recheck(fr)
+        except Exception as exc:
+            _publish_log(f"⚠ {reg} 早晨需求复核登记失败：{exc}")
         return fr
     except Exception:
         return None
@@ -5347,6 +5374,8 @@ def _runner(run: dict) -> None:
     try:
         # 常驻循环不会正常退出；必须在启动时用本线程的账号设置登记续期任务。
         _ensure_marketing_tasks()
+        for row in _read_csv(run_paths["fleet"]):
+            _register_daily_demand_recheck(row)
         script = str(Path(__file__).resolve().parent / "collector.py")
         args = [sys.executable, "-u", script]
         if run["mode"] in {"loop", "loop_resume"}:
